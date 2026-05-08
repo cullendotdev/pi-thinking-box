@@ -13,18 +13,34 @@
  *
  * Implementation: monkey-patches AssistantMessageComponent.prototype.updateContent
  * to wrap thinking Markdown in a Box with configurable background and padding.
- * Uses chalk directly for text styling since the theme singleton is not publicly
- * exported from @mariozechner/pi-coding-agent.
+ * Accesses the active theme via globalThis (same symbol-based mechanism the
+ * original component uses) so thinking text, labels, and errors follow the theme.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { AssistantMessageComponent, getAgentDir, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { AssistantMessageComponent, getAgentDir, Theme, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import chalk from "chalk";
 import defaults from "./config.json" with { type: "json" };
+
+// ---------------------------------------------------------------------------
+// Theme access
+// ---------------------------------------------------------------------------
+
+/**
+ * Pi stores the active theme on globalThis with a well-known Symbol.
+ * This is the same mechanism the assistant-message component uses internally;
+ * we re-use the public Theme class (exported) to access it without deep imports.
+ */
+const THEME_KEY: unique symbol = Symbol.for("@mariozechner/pi-coding-agent:theme");
+
+function getTheme(): Theme {
+	const t = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY];
+	if (!t) throw new Error("Theme not initialised — is pi running?");
+	return t;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,14 +86,14 @@ function createBgFn(hexColor: string): (text: string) => string {
 	return (text: string) => `${ansiBg}${text}\x1b[49m`;
 }
 
-/** Style thinking text (approximates theme's thinkingText color). */
+/** Style thinking text using the active theme. */
 function thinkingStyle(text: string): string {
-	return chalk.gray.italic(text);
+	return getTheme().fg("thinkingText", text);
 }
 
-/** Style error text. */
+/** Style error text using the active theme. */
 function errorStyle(text: string): string {
-	return chalk.red(text);
+	return getTheme().fg("error", text);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,17 +170,20 @@ function applyMonkeyPatch(): void {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				if (self.hideThinkingBlock) {
+					// Hidden thinking label — matches original component behaviour.
+					const t = getTheme();
 					self.contentContainer.addChild(
-						new Text(thinkingStyle(self.hiddenThinkingLabel), 1, 0),
+						new Text(t.italic(t.fg("thinkingText", self.hiddenThinkingLabel)), 1, 0),
 					);
 					if (hasVisibleContentAfter) {
 						self.contentContainer.addChild(new Spacer(1));
 					}
 				} else {
 					// Create the thinking Markdown …
+					// MarkdownTheme.italic() handles italics theme-aware.
 					const thinkingMd = new Markdown(content.thinking.trim(), 1, 0, mdTheme, {
 						color: (text: string) => thinkingStyle(text),
-						italic: false, // chalk applies italic; don't double-apply
+						italic: true,
 					});
 
 					// … and wrap it in a Box with background + padding.
