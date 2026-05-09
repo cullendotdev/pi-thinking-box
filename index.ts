@@ -20,9 +20,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { AssistantMessageComponent, getAgentDir, Theme, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { AssistantMessageComponent, getAgentDir, Theme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import defaults from "./config.json" with { type: "json" };
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ import defaults from "./config.json" with { type: "json" };
  * This is the same mechanism the assistant-message component uses internally;
  * we re-use the public Theme class (exported) to access it without deep imports.
  */
-const THEME_KEY: unique symbol = Symbol.for("@mariozechner/pi-coding-agent:theme");
+const THEME_KEY: unique symbol = Symbol.for("@earendil-works/pi-coding-agent:theme");
 
 function getTheme(): Theme {
 	const t = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY];
