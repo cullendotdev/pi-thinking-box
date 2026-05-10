@@ -2,15 +2,13 @@
 
 Wrap agent thinking blocks in a styled background box — just like user messages have. A [pi](https://github.com/earendil-works/pi) extension.
 
-**Default appearance** (dark theme, `#343541` background, 1 cell padding):
+**Before:**
 
-```
-┌──────────────────────────────────────┐
-│  Let me think about this carefully…  │
-│  The user wants to refactor...       │
-│  I should check middleware first.    │
-└──────────────────────────────────────┘
-```
+![Without thinking box](images/Before.png)
+
+**After:**
+
+![With thinking box](images/After.png)
 
 ## Install
 
