@@ -1,0 +1,36 @@
+{
+  "name": "pi-thinking-box",
+  "version": "0.1.0",
+  "description": "Wrap Pi agent thinking blocks in a styled background box.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-thinking",
+    "pi",
+    "thinking",
+    "tui",
+    "terminal-ui"
+  ],
+  "license": "MIT",
+  "author": "Cullen Botha <mail@cullen.dev>",
+  "files": [
+    "index.ts",
+    "config.json",
+    "docs/",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cullendotdev/pi-thinking-box.git"
+  },
+  "bugs": "https://github.com/cullendotdev/pi-thinking-box/issues",
+  "homepage": "https://github.com/cullendotdev/pi-thinking-box"
+}
