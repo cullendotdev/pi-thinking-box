@@ -2,12 +2,17 @@
  * Thinking Box Extension
  *
  * Wraps agent thinking blocks in a styled box container (background + padding),
- * similar to how user messages have a background box.
+ * similar to how user messages have a background box. Adds an optional header
+ * bar above each thinking block showing the collapse state, "Thinking…" label,
+ * and agent/model name.
  *
  * Commands:
  *   /thinking-box on|off             Toggle the feature
  *   /thinking-box bg <hex>           Set background color (e.g., "#2d2d30")
  *   /thinking-box padding <x> <y>    Set horizontal and vertical padding
+ *   /thinking-box header on|off      Toggle header bar above thinking blocks
+ *   /thinking-box label <text>       Set the header label (default: "Thinking")
+ *   /thinking-box thinking-level on|off  Toggle thinking level display in header
  *
  * User config persists to ~/.pi/agent/thinking-box.json — survives package updates.
  *
@@ -58,9 +63,15 @@ interface ThinkingBoxConfig {
 	bgColor: string | null;
 	paddingX: number;
 	paddingY: number;
+	showHeader: boolean;
+	headerLabel: string;
+	showThinkingLevel: boolean;
 }
 
 let config: ThinkingBoxConfig = { ...defaults };
+
+/** Reference to ExtensionAPI, set once during extension init. Used to query the current thinking level. */
+let piApi: ExtensionAPI | null = null;
 
 let originalUpdateContent: typeof AssistantMessageComponent.prototype.updateContent | null = null;
 
@@ -94,6 +105,40 @@ function thinkingStyle(text: string): string {
 /** Style error text using the active theme. */
 function errorStyle(text: string): string {
 	return getTheme().fg("error", text);
+}
+
+// ---------------------------------------------------------------------------
+// Header rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the thinking block header line.
+ * Format: "▼ {label} · {level}" or "▶ {label} · {level} (hidden)".
+ * Returns a Text component styled with the active theme.
+ */
+function createThinkingHeader(hideThinking: boolean): Text {
+	const t = getTheme();
+	const label = config.headerLabel || "Thinking";
+	const levelSuffix = buildLevelSuffix();
+
+	if (hideThinking) {
+		// Collapsed state: "▶ {label}[ · {level}] (hidden)"
+		const text = t.italic(t.fg("thinkingText", `▶ ${label}${levelSuffix} (hidden)`));
+		return new Text(text, 1, 0);
+	}
+
+	// Expanded state: "▼ {label}[ · {level}]"
+	const headerText = t.fg("accent", t.bold("▼")) + " " + t.fg("thinkingText", label + levelSuffix);
+	return new Text(headerText, 1, 0);
+}
+
+/** Build the thinking level suffix string (e.g., " · medium"), or empty if disabled/off. */
+function buildLevelSuffix(): string {
+	if (!config.showThinkingLevel || !piApi) return "";
+	const level = piApi.getThinkingLevel();
+	if (!level || level === "off") return "";
+	const t = getTheme();
+	return " " + t.fg("dim", "·") + " " + t.fg("dim", level);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,26 +215,43 @@ function applyMonkeyPatch(): void {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				if (self.hideThinkingBlock) {
-					// Hidden thinking label — matches original component behaviour.
-					const t = getTheme();
-					self.contentContainer.addChild(
-						new Text(t.italic(t.fg("thinkingText", self.hiddenThinkingLabel)), 1, 0),
-					);
+					// Hidden thinking block.
+					if (config.showHeader) {
+						// Show a styled collapse indicator header
+						self.contentContainer.addChild(
+							createThinkingHeader(true),
+						);
+					} else {
+						// Fall back to original hidden label
+						const t = getTheme();
+						self.contentContainer.addChild(
+							new Text(t.italic(t.fg("thinkingText", self.hiddenThinkingLabel)), 1, 0),
+						);
+					}
 					if (hasVisibleContentAfter) {
 						self.contentContainer.addChild(new Spacer(1));
 					}
 				} else {
-					// Create the thinking Markdown …
-					// MarkdownTheme.italic() handles italics theme-aware.
+					// Visible thinking block — wrap in a thinking section container.
+					const thinkingSection = new Container();
+
+					// Header bar (optional)
+					if (config.showHeader) {
+						thinkingSection.addChild(createThinkingHeader(false));
+					}
+
+					// Thinking content wrapped in Box with background + padding.
+					const bgFn = createBgFn(config.bgColor);
 					const thinkingMd = new Markdown(content.thinking.trim(), 1, 0, mdTheme, {
 						color: (text: string) => thinkingStyle(text),
 						italic: true,
 					});
 
-					// … and wrap it in a Box with background + padding.
-					const thinkingBox = new Box(config.paddingX, config.paddingY, createBgFn(config.bgColor));
+					const thinkingBox = new Box(config.paddingX, config.paddingY, bgFn);
 					thinkingBox.addChild(thinkingMd);
-					self.contentContainer.addChild(thinkingBox);
+					thinkingSection.addChild(thinkingBox);
+
+					self.contentContainer.addChild(thinkingSection);
 
 					if (hasVisibleContentAfter) {
 						self.contentContainer.addChild(new Spacer(1));
@@ -227,6 +289,7 @@ function applyMonkeyPatch(): void {
 // ---------------------------------------------------------------------------
 
 export default function thinkingBoxExtension(pi: ExtensionAPI): void {
+	piApi = pi;
 	applyMonkeyPatch();
 
 	pi.on("session_start", async () => {
@@ -234,15 +297,17 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("thinking-box", {
-		description: "Configure the thinking box (background + padding around thinking blocks)",
+		description: "Configure the thinking box (background, padding, header bar)",
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/);
 
 			// No args → show current config
 			if (parts.length === 0 || parts[0] === "") {
 				const status = config.enabled && config.bgColor ? "on" : "off";
+				const headerStatus = config.showHeader ? "on" : "off";
+				const levelStatus = config.showThinkingLevel ? "on" : "off";
 				ctx.ui.notify(
-					`Thinking box: ${status}, bg=${config.bgColor || "(default)"}, padding=${config.paddingX}x${config.paddingY}`,
+					`Thinking box: ${status}, bg=${config.bgColor || "(default)"}, padding=${config.paddingX}x${config.paddingY}, header=${headerStatus}, label="${config.headerLabel}", level=${levelStatus}`,
 					"info",
 				);
 				return;
@@ -303,9 +368,62 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Thinking box padding = ${px}x${py}`, "success");
 					break;
 				}
+				case "header": {
+					if (parts.length < 2) {
+						ctx.ui.notify("Usage: /thinking-box header on|off", "error");
+						return;
+					}
+					const val = parts[1].toLowerCase();
+					if (val === "on") {
+						config.showHeader = true;
+						await persistConfig();
+						ctx.ui.notify("Thinking box header: on", "success");
+					} else if (val === "off") {
+						config.showHeader = false;
+						await persistConfig();
+						ctx.ui.notify("Thinking box header: off", "success");
+					} else {
+						ctx.ui.notify("Usage: /thinking-box header on|off", "error");
+					}
+					break;
+				}
+				case "label": {
+					if (parts.length < 2) {
+						ctx.ui.notify("Usage: /thinking-box label <text>, e.g. /thinking-box label Reasoning", "error");
+						return;
+					}
+					const label = parts.slice(1).join(" ").trim();
+					if (!label) {
+						ctx.ui.notify("Label cannot be empty", "error");
+						return;
+					}
+					config.headerLabel = label;
+					await persistConfig();
+					ctx.ui.notify(`Thinking box label = "${label}"`, "success");
+					break;
+				}
+				case "thinking-level": {
+					if (parts.length < 2) {
+						ctx.ui.notify("Usage: /thinking-box thinking-level on|off", "error");
+						return;
+					}
+					const val = parts[1].toLowerCase();
+					if (val === "on") {
+						config.showThinkingLevel = true;
+						await persistConfig();
+						ctx.ui.notify("Thinking box thinking-level: on", "success");
+					} else if (val === "off") {
+						config.showThinkingLevel = false;
+						await persistConfig();
+						ctx.ui.notify("Thinking box thinking-level: off", "success");
+					} else {
+						ctx.ui.notify("Usage: /thinking-box thinking-level on|off", "error");
+					}
+					break;
+				}
 				default: {
 					ctx.ui.notify(
-						"Usage: /thinking-box [on|off|bg <hex>|padding <x> <y>]",
+						"Usage: /thinking-box [on|off|bg <hex>|padding <x> <y>|header on|off|label <text>|thinking-level on|off]",
 						"error",
 					);
 				}

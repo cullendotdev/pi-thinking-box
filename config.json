@@ -2,5 +2,8 @@
   "enabled": true,
   "bgColor": "#343541",
   "paddingX": 0,
-  "paddingY": 1
+  "paddingY": 1,
+  "showHeader": true,
+  "headerLabel": "Thinking",
+  "showThinkingLevel": true
 }
