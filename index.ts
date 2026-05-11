@@ -7,12 +7,7 @@
  * and agent/model name.
  *
  * Commands:
- *   /thinking-box on|off             Toggle the feature
- *   /thinking-box bg <hex>           Set background color (e.g., "#2d2d30")
- *   /thinking-box padding <x> <y>    Set horizontal and vertical padding
- *   /thinking-box header on|off      Toggle header bar above thinking blocks
- *   /thinking-box label <text>       Set the header label (default: "Thinking")
- *   /thinking-box thinking-level on|off  Toggle thinking level display in header
+ *   /thinking-box  Opens an interactive settings menu to configure all options.
  *
  * User config persists to ~/.pi/agent/thinking-box.json — survives package updates.
  *
@@ -26,8 +21,27 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { AssistantMessageComponent, getAgentDir, Theme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+	AssistantMessageComponent,
+	DynamicBorder,
+	getAgentDir,
+	Theme,
+	type ExtensionAPI,
+	getSettingsListTheme,
+	getSelectListTheme,
+} from "@earendil-works/pi-coding-agent";
+import {
+	Box,
+	Container,
+	Input,
+	Markdown,
+	SelectList,
+	type SelectItem,
+	type SettingItem,
+	SettingsList,
+	Spacer,
+	Text,
+} from "@earendil-works/pi-tui";
 import defaults from "./config.json" with { type: "json" };
 
 // ---------------------------------------------------------------------------
@@ -285,6 +299,237 @@ function applyMonkeyPatch(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Color presets for the background color submenu
+// ---------------------------------------------------------------------------
+
+const COLOR_PRESETS: SelectItem[] = [
+	{ value: "#343541", label: "Default", description: "Dark gray (ChatGPT-style)" },
+	{ value: "#2d2d30", label: "VS Code Dark", description: "Editor dark" },
+	{ value: "#1e1e2e", label: "Dark Blue-Gray" },
+	{ value: "#282a36", label: "Dracula" },
+	{ value: "#1a1b26", label: "Tokyo Night" },
+	{ value: "#2b213a", label: "Purple Twilight" },
+	{ value: "#3c3836", label: "Gruvbox Dark" },
+	{ value: "#1e1e24", label: "Deep Black" },
+	{ value: "#000000", label: "Pure Black" },
+	{ value: "__custom__", label: "Custom…", description: "Enter a custom hex color via input dialog" },
+];
+
+/** Sentinel value used to signal that the custom-color input dialog should open. */
+const CUSTOM_COLOR_SENTINEL = "__custom__";
+
+/** Sentinel value used to signal that the label input dialog should open. */
+const EDIT_LABEL_SENTINEL = "__edit__";
+
+// ---------------------------------------------------------------------------
+// Submenu factory helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Color picker submenu with live preview on hover and inline custom color
+ * entry.  onPreview fires on every selection change (arrow-key navigation)
+ * so the main settings UI can update its preview box in real time.
+ */
+function createColorSubmenu(
+	currentValue: string,
+	selectListTheme: ReturnType<typeof getSelectListTheme>,
+	onPreview: (color: string) => void,
+	done: (value?: string) => void,
+): Container {
+	const originalColor = currentValue;
+	const container = new Container();
+
+	// Mutable state (reassigned on rebuild)
+	let selectList: SelectList;
+	let customInput: Input | null = null;
+	let showingInput = false;
+
+	/** Full rebuild of the container's child tree for the current mode. */
+	const rebuild = (): void => {
+		container.clear();
+
+		if (showingInput && customInput) {
+			// --- Custom hex input mode ---
+			container.addChild(
+				new Text("Enter a 6-digit hex color (e.g. #2d2d30 or 2d2d30):", 0, 1),
+			);
+			container.addChild(new Spacer(1));
+			container.addChild(customInput);
+			container.addChild(new Spacer(1));
+			container.addChild(new Text("Enter to confirm · Esc to go back", 0, 0));
+		} else {
+			// --- SelectList mode ---
+			// Title
+			container.addChild(new Text(selectListTheme.selectedPrefix("Background Color"), 0, 1));
+			container.addChild(new Spacer(1));
+
+			selectList = new SelectList(
+				COLOR_PRESETS,
+				Math.min(COLOR_PRESETS.length, 10),
+				selectListTheme,
+			);
+
+			// Pre-select current value
+			const currentIndex = COLOR_PRESETS.findIndex((o) => o.value === currentValue);
+			if (currentIndex !== -1) selectList.setSelectedIndex(currentIndex);
+
+			selectList.onSelectionChange = (item) => {
+				if (item.value !== CUSTOM_COLOR_SENTINEL) {
+					onPreview(item.value);
+				}
+			};
+
+			selectList.onSelect = (item) => {
+				if (item.value === CUSTOM_COLOR_SENTINEL) {
+					// Transition to custom hex input
+					customInput = new Input();
+					customInput.setValue("#");
+				(customInput as any).cursor = 1;
+					showingInput = true;
+					rebuild();
+				} else {
+					done(item.value);
+				}
+			};
+
+			selectList.onCancel = () => {
+				onPreview(originalColor); // Restore original on cancel
+				done();
+			};
+
+			container.addChild(selectList);
+
+			container.addChild(new Spacer(1));
+			container.addChild(
+				new Text("↑↓ navigate (live preview) · Enter select · Esc cancel", 0, 0),
+			);
+		}
+	};
+
+	container.handleInput = (data: string) => {
+		if (showingInput && customInput) {
+			if (data === "\r" || data === "\n") {
+				const raw = customInput.getValue().trim();
+				if (raw && /^#?[0-9a-fA-F]{6}$/.test(raw)) {
+					const normalized = raw.startsWith("#") ? raw : `#${raw}`;
+					onPreview(normalized);
+					done(normalized);
+				}
+				return;
+			}
+			if (data === "\x1b") {
+				// Escape → back to SelectList
+				showingInput = false;
+				customInput = null;
+				onPreview(originalColor);
+				rebuild();
+				return;
+			}
+			customInput.handleInput(data);
+		} else {
+			selectList!.handleInput(data);
+		}
+	};
+
+	rebuild();
+	return container;
+}
+
+/**
+ * Label-editing submenu that opens an inline Input field instead of closing
+ * the settings dialog to prompt externally.
+ */
+function createLabelSubmenu(
+	currentValue: string,
+	selectListTheme: ReturnType<typeof getSelectListTheme>,
+	done: (value?: string) => void,
+): Container {
+	const originalLabel = currentValue;
+	const container = new Container();
+
+	// Mutable state
+	let selectList: SelectList;
+	let editInput: Input | null = null;
+	let showingInput = false;
+
+	const rebuild = (): void => {
+		container.clear();
+
+		if (showingInput && editInput) {
+			// --- Inline input mode ---
+			container.addChild(new Text("Header Label", 0, 1));
+			container.addChild(new Spacer(1));
+			container.addChild(editInput);
+			container.addChild(new Spacer(1));
+			container.addChild(new Text("Enter to confirm · Esc to go back", 0, 0));
+		} else {
+			// --- SelectList mode ---
+			container.addChild(
+				new Text(selectListTheme.selectedPrefix("Header Label"), 0, 1),
+			);
+			container.addChild(new Spacer(1));
+			container.addChild(
+				new Text(`Current: "${currentValue}"`, 0, 0),
+			);
+			container.addChild(new Spacer(1));
+
+			selectList = new SelectList(
+				[
+					{
+						value: EDIT_LABEL_SENTINEL,
+						label: "Edit label…",
+						description: "Type a new header label",
+					},
+				],
+				3,
+				selectListTheme,
+			);
+
+			selectList.onSelect = (_item) => {
+				editInput = new Input();
+				editInput.setValue(currentValue);
+				showingInput = true;
+				rebuild();
+			};
+
+			selectList.onCancel = () => {
+				done();
+			};
+
+			container.addChild(selectList);
+		}
+	};
+
+	container.handleInput = (data: string) => {
+		if (showingInput && editInput) {
+			if (data === "\r" || data === "\n") {
+				const val = editInput.getValue().trim();
+				if (val) {
+					// Update local snapshot so the SelectList-mode view
+					// shows the new value if the user re-enters the submenu.
+					currentValue = val;
+					done(val);
+				}
+				return;
+			}
+			if (data === "\x1b") {
+				// Escape → back to SelectList (keep original)
+				showingInput = false;
+				editInput = null;
+				rebuild();
+				return;
+			}
+			editInput.handleInput(data);
+		} else {
+			selectList!.handleInput(data);
+		}
+	};
+
+	rebuild();
+	return container;
+}
+
+// ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
 
@@ -297,137 +542,190 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("thinking-box", {
-		description: "Configure the thinking box (background, padding, header bar)",
-		handler: async (args, ctx) => {
-			const parts = args.trim().split(/\s+/);
+		description: "Configure the thinking box (interactive menu)",
+		handler: async (_args, ctx) => {
+			await ctx.ui.custom((tui, theme, _kb, done) => {
+				const slTheme = getSettingsListTheme();
+				const selectTheme = getSelectListTheme();
 
-			// No args → show current config
-			if (parts.length === 0 || parts[0] === "") {
-				const status = config.enabled && config.bgColor ? "on" : "off";
-				const headerStatus = config.showHeader ? "on" : "off";
-				const levelStatus = config.showThinkingLevel ? "on" : "off";
-				ctx.ui.notify(
-					`Thinking box: ${status}, bg=${config.bgColor || "(default)"}, padding=${config.paddingX}x${config.paddingY}, header=${headerStatus}, label="${config.headerLabel}", level=${levelStatus}`,
-					"info",
-				);
-				return;
-			}
+				const items: SettingItem[] = [
+					{
+						id: "enabled",
+						label: "Enabled",
+						description: "Wrap thinking blocks in a styled background box",
+						currentValue: config.enabled ? "on" : "off",
+						values: ["on", "off"],
+					},
+					{
+						id: "bg",
+						label: "Background Color",
+						description: `Current: ${config.bgColor || "(none)"}. Choose a preset or enter a custom hex color.`,
+						currentValue: config.bgColor || "none",
+						submenu: (_currentValue, subDone) =>
+							createColorSubmenu(
+								config.bgColor ?? "",
+								selectTheme,
+								(color: string) => {
+									config.bgColor = color;
+									config.enabled = true;
+									buildPreview();
+									tui.requestRender();
+								},
+								subDone,
+							),
+					},
+					{
+						id: "paddingX",
+						label: "Padding X",
+						description: "Horizontal padding inside the thinking box (in characters)",
+						currentValue: String(config.paddingX),
+						values: ["0", "1", "2", "3", "4", "5"],
+					},
+					{
+						id: "paddingY",
+						label: "Padding Y",
+						description: "Vertical padding inside the thinking box (in lines)",
+						currentValue: String(config.paddingY),
+						values: ["0", "1", "2", "3", "4", "5"],
+					},
+					{
+						id: "showHeader",
+						label: "Show Header",
+						description: "Display a header bar above each thinking block",
+						currentValue: config.showHeader ? "on" : "off",
+						values: ["on", "off"],
+					},
+					{
+						id: "headerLabel",
+						label: "Header Label",
+						description: `Current: "${config.headerLabel}"`,
+						currentValue: config.headerLabel,
+						submenu: (_currentValue, subDone) =>
+							createLabelSubmenu(config.headerLabel, selectTheme, subDone),
+					},
+					{
+						id: "showThinkingLevel",
+						label: "Show Thinking Level",
+						description: "Append the current thinking level (e.g. 'medium') to the header",
+						currentValue: config.showThinkingLevel ? "on" : "off",
+						values: ["on", "off"],
+					},
+				];
 
-			const sub = parts[0].toLowerCase();
+				const container = new Container();
 
-			switch (sub) {
-				case "on": {
-					config.enabled = true;
-					if (!config.bgColor) config.bgColor = defaults.bgColor;
-					await persistConfig();
-					ctx.ui.notify("Thinking box: on (applies to next response)", "success");
-					break;
-				}
-				case "off": {
-					config.enabled = false;
-					await persistConfig();
-					ctx.ui.notify("Thinking box: off", "success");
-					break;
-				}
-				case "bg": {
-					if (parts.length < 2) {
-						ctx.ui.notify("Usage: /thinking-box bg <hex>, e.g. #2d2d30", "error");
+				// Top border
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				// Title
+				container.addChild(new Text(theme.fg("accent", theme.bold("Thinking Box Settings")), 1, 1));
+
+				// Live preview of the thinking box
+				container.addChild(new Text(theme.fg("dim", theme.bold("Preview:")), 1, 0));
+				const previewContainer = new Container();
+				container.addChild(previewContainer);
+
+				const buildPreview = (): void => {
+					previewContainer.clear();
+
+					if (!config.enabled || !config.bgColor) {
+						previewContainer.addChild(
+							new Text(theme.fg("dim", "  (Disabled — enable and set a color to preview)"), 0, 0),
+						);
 						return;
 					}
-					const color = parts[1];
-					if (!/^#?[0-9a-fA-F]{6}$/.test(color)) {
-						ctx.ui.notify("Invalid color. Use 6-digit hex, e.g. #2d2d30", "error");
-						return;
+
+					// Header (matches createThinkingHeader)
+					if (config.showHeader) {
+						const label = config.headerLabel || "Thinking";
+						let suffix = "";
+						if (config.showThinkingLevel && piApi) {
+							const level = piApi.getThinkingLevel();
+							if (level && level !== "off") {
+								suffix = " " + theme.fg("dim", "·") + " " + theme.fg("dim", level);
+							}
+						}
+						const headerLine =
+							theme.fg("accent", theme.bold("▼")) + " " + theme.fg("thinkingText", label + suffix);
+						previewContainer.addChild(new Text(headerLine, 1, 0));
 					}
-					try {
-						hexToAnsiBg(color);
-					} catch {
-						ctx.ui.notify("Invalid hex color", "error");
-						return;
-					}
-					config.bgColor = color.startsWith("#") ? color : `#${color}`;
-					config.enabled = true;
-					await persistConfig();
-					ctx.ui.notify(`Thinking box bg = ${config.bgColor}`, "success");
-					break;
-				}
-				case "padding": {
-					if (parts.length < 3) {
-						ctx.ui.notify("Usage: /thinking-box padding <x> <y>, e.g. 1 1", "error");
-						return;
-					}
-					const px = parseInt(parts[1], 10);
-					const py = parseInt(parts[2], 10);
-					if (Number.isNaN(px) || Number.isNaN(py) || px < 0 || py < 0 || px > 10 || py > 10) {
-						ctx.ui.notify("Padding must be 0–10, e.g. /thinking-box padding 1 1", "error");
-						return;
-					}
-					config.paddingX = px;
-					config.paddingY = py;
-					await persistConfig();
-					ctx.ui.notify(`Thinking box padding = ${px}x${py}`, "success");
-					break;
-				}
-				case "header": {
-					if (parts.length < 2) {
-						ctx.ui.notify("Usage: /thinking-box header on|off", "error");
-						return;
-					}
-					const val = parts[1].toLowerCase();
-					if (val === "on") {
-						config.showHeader = true;
-						await persistConfig();
-						ctx.ui.notify("Thinking box header: on", "success");
-					} else if (val === "off") {
-						config.showHeader = false;
-						await persistConfig();
-						ctx.ui.notify("Thinking box header: off", "success");
-					} else {
-						ctx.ui.notify("Usage: /thinking-box header on|off", "error");
-					}
-					break;
-				}
-				case "label": {
-					if (parts.length < 2) {
-						ctx.ui.notify("Usage: /thinking-box label <text>, e.g. /thinking-box label Reasoning", "error");
-						return;
-					}
-					const label = parts.slice(1).join(" ").trim();
-					if (!label) {
-						ctx.ui.notify("Label cannot be empty", "error");
-						return;
-					}
-					config.headerLabel = label;
-					await persistConfig();
-					ctx.ui.notify(`Thinking box label = "${label}"`, "success");
-					break;
-				}
-				case "thinking-level": {
-					if (parts.length < 2) {
-						ctx.ui.notify("Usage: /thinking-box thinking-level on|off", "error");
-						return;
-					}
-					const val = parts[1].toLowerCase();
-					if (val === "on") {
-						config.showThinkingLevel = true;
-						await persistConfig();
-						ctx.ui.notify("Thinking box thinking-level: on", "success");
-					} else if (val === "off") {
-						config.showThinkingLevel = false;
-						await persistConfig();
-						ctx.ui.notify("Thinking box thinking-level: off", "success");
-					} else {
-						ctx.ui.notify("Usage: /thinking-box thinking-level on|off", "error");
-					}
-					break;
-				}
-				default: {
-					ctx.ui.notify(
-						"Usage: /thinking-box [on|off|bg <hex>|padding <x> <y>|header on|off|label <text>|thinking-level on|off]",
-						"error",
+
+					// Thinking box with background + padding
+					const bgFn = createBgFn(config.bgColor);
+					const box = new Box(config.paddingX, config.paddingY, bgFn);
+
+					const previewBody = theme.fg(
+						"thinkingText",
+						theme.italic(
+							"This preview shows how thinking blocks will appear. " +
+								"Background, padding, header, and label match your current configuration.",
+						),
 					);
-				}
-			}
+					box.addChild(new Text(previewBody, 0, 0));
+					previewContainer.addChild(box);
+				};
+
+				// Initial preview render
+				buildPreview();
+
+				container.addChild(new Spacer(1));
+
+				const settingsList = new SettingsList(
+					items,
+					Math.min(items.length + 2, 15),
+					slTheme,
+					(id, newValue) => {
+						switch (id) {
+							case "enabled":
+								config.enabled = newValue === "on";
+								if (config.enabled && !config.bgColor) {
+									config.bgColor = defaults.bgColor;
+								}
+								break;
+							case "bg":
+								config.bgColor = newValue || defaults.bgColor;
+								config.enabled = true;
+								break;
+							case "paddingX":
+								config.paddingX = parseInt(newValue, 10);
+								break;
+							case "paddingY":
+								config.paddingY = parseInt(newValue, 10);
+								break;
+							case "showHeader":
+								config.showHeader = newValue === "on";
+								break;
+							case "headerLabel":
+								config.headerLabel = newValue || defaults.headerLabel;
+								break;
+							case "showThinkingLevel":
+								config.showThinkingLevel = newValue === "on";
+								break;
+						}
+						persistConfig();
+						buildPreview();
+						tui.requestRender();
+					},
+					() => done(undefined),
+					{ enableSearch: true },
+				);
+
+				container.addChild(settingsList);
+
+				// Bottom border
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				return {
+					render: (w: number) => container.render(w),
+					invalidate: () => container.invalidate(),
+					handleInput: (data: string) => {
+						settingsList.handleInput?.(data);
+						tui.requestRender();
+					},
+				};
+			});
+
+
 		},
 	});
 }

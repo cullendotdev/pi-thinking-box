@@ -28,7 +28,7 @@ The extension accesses the active theme through `globalThis` using the same `Sym
 
 ## Implementation overview
 
-**`index.ts`** — single file, ~280 lines. Three sections:
+**`index.ts`** — single file, ~730 lines. Five sections:
 
 ### 1. Config state (module-level)
 
@@ -91,14 +91,38 @@ new Text(t.italic(t.fg("thinkingText", label)), 1, 0);
 
 When disabled, delegates to the original method.
 
-### 4. Commands
+### 4. Interactive Settings Menu
 
-| Command | Behavior |
-|---------|----------|
-| `/thinking-box` | Show current settings |
-| `/thinking-box on\|off` | Toggle; persists to `~/.pi/agent/thinking-box.json` |
-| `/thinking-box bg #rrggbb` | Set background color; auto-enables, persists |
-| `/thinking-box padding X Y` | Set padding (0–10); persists to disk |
+The `/thinking-box` command opens an interactive settings UI built with `SettingsList`, `SelectList`, `Input`, and `DynamicBorder`. It replaces the old subcommand-based CLI with a unified menu.
+
+**Settings controls:**
+| Setting | Control | Values |
+|---------|---------|--------|
+| Enabled | Toggle (on/off) | SelectList |
+| Background Color | Color picker submenu | 9 presets + custom hex via Input |
+| Padding X | SelectList | 0–5 |
+| Padding Y | SelectList | 0–5 |
+| Show Header | Toggle (on/off) | SelectList |
+| Header Label | Inline Input submenu | Any text |
+| Show Thinking Level | Toggle (on/off) | SelectList |
+
+**Live preview:** A real-time `Box` preview shows how thinking blocks will render with the current settings. It updates on every selection change (including arrow-key navigation in the color picker).
+
+### 5. Submenu helpers
+
+Two factory functions create submenus that open inline rather than closing the settings dialog:
+
+**`createColorSubmenu(currentValue, selectListTheme, onPreview, done)`**
+- Renders a `SelectList` of `COLOR_PRESETS` (Default, VS Code Dark, Dracula, Tokyo Night, etc.)
+- `onPreview` fires on every arrow-key selection change — the main UI updates its preview box in real time
+- Selecting "Custom…" transitions to an `Input` field for hex entry (validates 6-digit hex)
+- Escape returns to the preset list
+
+**`createLabelSubmenu(currentValue, selectListTheme, done)`**
+- Shows current label with an "Edit label…" option
+- Selecting it transitions to an inline `Input` field
+- Enter confirms the new label; Escape returns to the SelectList
+- `currentValue` is reassigned on confirm so re-entering the submenu shows the updated label
 
 ## Color pipeline
 
@@ -163,7 +187,7 @@ User config is optional — defaults work without any file on disk.
 
 ```
 thinking-box/
-├── index.ts              # Extension code (~280 lines)
+├── index.ts              # Extension code (~730 lines)
 ├── config.json           # Bundled defaults (read-only)
 ├── README.md             # Install + usage
 └── docs/

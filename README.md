@@ -22,41 +22,34 @@ Restart pi or run `/reload` after install.
 
 ## Usage
 
-| Command | Effect |
-|---------|--------|
-| `/thinking-box` | Show current settings |
-| `/thinking-box on` | Enable the box |
-| `/thinking-box off` | Disable (stock rendering) |
-| `/thinking-box bg #2d2d30` | Set background color (6-digit hex) |
-| `/thinking-box padding 1 1` | Set padding in character cells (cols × rows, 0–10) |
+Run `/thinking-box` to open an interactive settings menu with a live preview. Configure everything in one place:
 
-### Examples
+- **Enabled** — toggle the thinking box on/off
+- **Background Color** — choose from 9 presets (VS Code Dark, Dracula, Tokyo Night, etc.) or enter a custom hex color
+- **Padding X / Y** — horizontal and vertical padding inside the box (0–5)
+- **Show Header** — toggle a header bar above each thinking block
+- **Header Label** — customise the header text (default: "Thinking")
+- **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
 
-```bash
-# Match your terminal background
-/thinking-box bg #1e1e2e
+All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/thinking-box.json`.
 
-# Wider box
-/thinking-box padding 2 1
+### Color Presets
 
-# No padding — tight background
-/thinking-box padding 0 0
+Navigate the color picker with arrow keys — the preview updates live as you browse. Choose "Custom…" to enter any 6-digit hex color.
 
-# Disable
-/thinking-box off
-
-# Re-enable
-/thinking-box on
-```
+- Default (ChatGPT-style), VS Code Dark, Dark Blue-Gray, Dracula, Tokyo Night, Purple Twilight, Gruvbox Dark, Deep Black, Pure Black, Custom…
 
 ## Configuration
 
 Config persists across sessions to `~/.pi/agent/thinking-box.json`. Changes survive pi restarts, reloads, and package updates. Defaults ship in `config.json` inside the extension directory.
 
 **Defaults:**
+- Enabled: `true`
 - Background: `#343541`
 - Padding: `0 × 1` (character cells)
-- Enabled: `true`
+- Show Header: `true`
+- Header Label: `"Thinking"`
+- Show Thinking Level: `true`
 
 ## How It Works
 
