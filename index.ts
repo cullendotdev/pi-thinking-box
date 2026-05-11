@@ -661,7 +661,7 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								"Background, padding, header, and label match your current configuration.",
 						),
 					);
-					box.addChild(new Text(previewBody, 0, 0));
+					box.addChild(new Text(previewBody, 1, 0));
 					previewContainer.addChild(box);
 				};
 

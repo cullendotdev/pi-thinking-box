@@ -2,13 +2,7 @@
 
 Wrap agent thinking blocks in a styled background box — just like user messages have. A [pi](https://github.com/earendil-works/pi) extension.
 
-**Before:**
-
-![Without thinking box](images/Before.png)
-
-**After:**
-
-![With thinking box](images/After.png)
+![Settings menu with live preview of styled thinking box](images/settings.png)
 
 ## Install
 
