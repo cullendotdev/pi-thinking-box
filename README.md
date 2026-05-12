@@ -2,7 +2,7 @@
 
 Wrap agent thinking blocks in a styled background box — just like user messages have. A [pi](https://github.com/earendil-works/pi) extension.
 
-![Settings menu with live preview of styled thinking box](images/settings.png)
+![Settings menu with live preview of styled thinking box](https://raw.githubusercontent.com/cullendotdev/pi-thinking-box/refs/heads/main/images/settings.png)
 
 ## Install
 
@@ -38,6 +38,7 @@ Navigate the color picker with arrow keys — the preview updates live as you br
 Config persists across sessions to `~/.pi/agent/thinking-box.json`. Changes survive pi restarts, reloads, and package updates. Defaults ship in `config.json` inside the extension directory.
 
 **Defaults:**
+
 - Enabled: `true`
 - Background: `#343541`
 - Padding: `0 × 1` (character cells)
