@@ -80,6 +80,7 @@ interface ThinkingBoxConfig {
 	showHeader: boolean;
 	headerLabel: string;
 	showThinkingLevel: boolean;
+	showArrow: boolean;
 }
 
 let config: ThinkingBoxConfig = { ...defaults };
@@ -137,12 +138,14 @@ function createThinkingHeader(hideThinking: boolean): Text {
 
 	if (hideThinking) {
 		// Collapsed state: "▶ {label}[ · {level}] (hidden)"
-		const text = t.italic(t.fg("thinkingText", `▶ ${label}${levelSuffix} (hidden)`));
+		const arrow = config.showArrow ? "▶ " : "";
+		const text = t.italic(t.fg("thinkingText", `${arrow}${label}${levelSuffix} (hidden)`));
 		return new Text(text, 1, 0);
 	}
 
 	// Expanded state: "▼ {label}[ · {level}]"
-	const headerText = t.fg("accent", t.bold("▼")) + " " + t.fg("thinkingText", label + levelSuffix);
+	const arrow = config.showArrow ? t.fg("accent", t.bold("▼")) + " " : "";
+	const headerText = arrow + t.fg("thinkingText", label + levelSuffix);
 	return new Text(headerText, 1, 0);
 }
 
@@ -610,6 +613,13 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 						currentValue: config.showThinkingLevel ? "on" : "off",
 						values: ["on", "off"],
 					},
+				{
+					id: "showArrow",
+					label: "Show Arrow",
+					description: "Show the ▼/▶ collapse indicator arrow in the header",
+					currentValue: config.showArrow ? "on" : "off",
+					values: ["on", "off"],
+				},
 				];
 
 				const container = new Container();
@@ -645,8 +655,8 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								suffix = " " + theme.fg("dim", "·") + " " + theme.fg("dim", level);
 							}
 						}
-						const headerLine =
-							theme.fg("accent", theme.bold("▼")) + " " + theme.fg("thinkingText", label + suffix);
+						const arrow = config.showArrow ? theme.fg("accent", theme.bold("▼")) + " " : "";
+						const headerLine = arrow + theme.fg("thinkingText", label + suffix);
 						previewContainer.addChild(new Text(headerLine, 1, 0));
 					}
 
@@ -700,6 +710,9 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								break;
 							case "showThinkingLevel":
 								config.showThinkingLevel = newValue === "on";
+								break;
+							case "showArrow":
+								config.showArrow = newValue === "on";
 								break;
 						}
 						persistConfig();
