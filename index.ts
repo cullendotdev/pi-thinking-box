@@ -12,9 +12,10 @@
  * User config persists to ~/.pi/agent/thinking-box.json — survives package updates.
  *
  * Implementation: monkey-patches AssistantMessageComponent.prototype.updateContent
- * to wrap thinking Markdown in a Box with configurable background and padding.
- * Accesses the active theme via globalThis (same symbol-based mechanism the
- * original component uses) so thinking text, labels, and errors follow the theme.
+ * to wrap thinking Markdown in a Box with configurable background, padding, header,
+ * and line count. Accesses the active theme via globalThis (same symbol-based
+ * mechanism the original component uses) so thinking text, labels, and errors
+ * follow the theme.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -81,6 +82,7 @@ interface ThinkingBoxConfig {
 	headerLabel: string;
 	showThinkingLevel: boolean;
 	showArrow: boolean;
+	showLineCount: boolean;
 }
 
 let config: ThinkingBoxConfig = { ...defaults };
@@ -128,24 +130,25 @@ function errorStyle(text: string): string {
 
 /**
  * Build the thinking block header line.
- * Format: "▼ {label} · {level}" or "▶ {label} · {level} (hidden)".
+ * Format: "▼ {label} · {level} · {N lines}" or "▶ {label} · {level} · {N lines} (hidden)".
  * Returns a Text component styled with the active theme.
  */
-function createThinkingHeader(hideThinking: boolean): Text {
+function createThinkingHeader(hideThinking: boolean, thinkingText: string): Text {
 	const t = getTheme();
 	const label = config.headerLabel || "Thinking";
 	const levelSuffix = buildLevelSuffix();
+	const lineCountSuffix = buildLineCountSuffix(thinkingText);
 
 	if (hideThinking) {
-		// Collapsed state: "▶ {label}[ · {level}] (hidden)"
+		// Collapsed state: "▶ {label}[ · {level}][ · {N lines}] (hidden)"
 		const arrow = config.showArrow ? "▶ " : "";
-		const text = t.italic(t.fg("thinkingText", `${arrow}${label}${levelSuffix} (hidden)`));
+		const text = t.italic(t.fg("thinkingText", `${arrow}${label}${levelSuffix}${lineCountSuffix} (hidden)`));
 		return new Text(text, 1, 0);
 	}
 
-	// Expanded state: "▼ {label}[ · {level}]"
+	// Expanded state: "▼ {label}[ · {level}][ · {N lines}]"
 	const arrow = config.showArrow ? t.fg("accent", t.bold("▼")) + " " : "";
-	const headerText = arrow + t.fg("thinkingText", label + levelSuffix);
+	const headerText = arrow + t.fg("thinkingText", label + levelSuffix + lineCountSuffix);
 	return new Text(headerText, 1, 0);
 }
 
@@ -156,6 +159,14 @@ function buildLevelSuffix(): string {
 	if (!level || level === "off") return "";
 	const t = getTheme();
 	return " " + t.fg("dim", "·") + " " + t.fg("dim", level);
+}
+
+/** Build the line count suffix string (e.g., " · 47 lines"), or empty if disabled. */
+function buildLineCountSuffix(thinkingText: string): string {
+	if (!config.showLineCount) return "";
+	const lines = thinkingText.split("\n").length;
+	const t = getTheme();
+	return " " + t.fg("dim", "·") + " " + t.fg("dim", `${lines} lines`);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +247,7 @@ function applyMonkeyPatch(): void {
 					if (config.showHeader) {
 						// Show a styled collapse indicator header
 						self.contentContainer.addChild(
-							createThinkingHeader(true),
+							createThinkingHeader(true, content.thinking.trim()),
 						);
 					} else {
 						// Fall back to original hidden label
@@ -254,7 +265,7 @@ function applyMonkeyPatch(): void {
 
 					// Header bar (optional)
 					if (config.showHeader) {
-						thinkingSection.addChild(createThinkingHeader(false));
+						thinkingSection.addChild(createThinkingHeader(false, content.thinking.trim()));
 					}
 
 					// Thinking content wrapped in Box with background + padding.
@@ -614,6 +625,13 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 						values: ["on", "off"],
 					},
 				{
+					id: "showLineCount",
+					label: "Show Line Count",
+					description: "Display the number of lines in thinking block headers",
+					currentValue: config.showLineCount ? "on" : "off",
+					values: ["on", "off"],
+				},
+				{
 					id: "showArrow",
 					label: "Show Arrow",
 					description: "Show the ▼/▶ collapse indicator arrow in the header",
@@ -655,6 +673,9 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								suffix = " " + theme.fg("dim", "·") + " " + theme.fg("dim", level);
 							}
 						}
+						if (config.showLineCount) {
+							suffix += " " + theme.fg("dim", "·") + " " + theme.fg("dim", "3 lines");
+						}
 						const arrow = config.showArrow ? theme.fg("accent", theme.bold("▼")) + " " : "";
 						const headerLine = arrow + theme.fg("thinkingText", label + suffix);
 						previewContainer.addChild(new Text(headerLine, 1, 0));
@@ -664,12 +685,12 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 					const bgFn = createBgFn(config.bgColor);
 					const box = new Box(config.paddingX, config.paddingY, bgFn);
 
+					const previewTextStr = "This preview shows how thinking blocks will appear.\n" +
+						"Background, padding, header, and label match\n" +
+						"your current configuration.";
 					const previewBody = theme.fg(
 						"thinkingText",
-						theme.italic(
-							"This preview shows how thinking blocks will appear. " +
-								"Background, padding, header, and label match your current configuration.",
-						),
+						theme.italic(previewTextStr),
 					);
 					box.addChild(new Text(previewBody, 1, 0));
 					previewContainer.addChild(box);
@@ -713,6 +734,9 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								break;
 							case "showArrow":
 								config.showArrow = newValue === "on";
+								break;
+							case "showLineCount":
+								config.showLineCount = newValue === "on";
 								break;
 						}
 						persistConfig();

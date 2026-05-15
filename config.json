@@ -6,5 +6,6 @@
   "showHeader": true,
   "headerLabel": "Thinking",
   "showThinkingLevel": true,
-  "showArrow": true
+  "showArrow": true,
+  "showLineCount": true
 }

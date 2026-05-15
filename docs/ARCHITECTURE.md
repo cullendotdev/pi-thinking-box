@@ -28,7 +28,7 @@ The extension accesses the active theme through `globalThis` using the same `Sym
 
 ## Implementation overview
 
-**`index.ts`** — single file, ~730 lines. Five sections:
+**`index.ts`** — single file. Five sections:
 
 ### 1. Config state (module-level)
 
@@ -38,6 +38,11 @@ interface ThinkingBoxConfig {
   bgColor: string | null;
   paddingX: number;
   paddingY: number;
+  showHeader: boolean;
+  headerLabel: string;
+  showThinkingLevel: boolean;
+  showArrow: boolean;
+  showLineCount: boolean;
 }
 
 let config: ThinkingBoxConfig = { ...defaults };
@@ -105,6 +110,8 @@ The `/thinking-box` command opens an interactive settings UI built with `Setting
 | Show Header | Toggle (on/off) | SelectList |
 | Header Label | Inline Input submenu | Any text |
 | Show Thinking Level | Toggle (on/off) | SelectList |
+| Show Line Count | Toggle (on/off) | SelectList |
+| Show Arrow | Toggle (on/off) | SelectList |
 
 **Live preview:** A real-time `Box` preview shows how thinking blocks will render with the current settings. It updates on every selection change (including arrow-key navigation in the color picker).
 
@@ -187,7 +194,7 @@ User config is optional — defaults work without any file on disk.
 
 ```
 thinking-box/
-├── index.ts              # Extension code (~730 lines)
+├── index.ts              # Extension code
 ├── config.json           # Bundled defaults (read-only)
 ├── README.md             # Install + usage
 └── docs/
