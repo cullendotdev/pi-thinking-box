@@ -48,7 +48,7 @@ interface ThinkingBoxConfig {
 let config: ThinkingBoxConfig = { ...defaults };
 ```
 
-Defaults are imported from `config.json` (bundled with the extension, read-only). On `session_start`, `loadConfig()` reads user overrides from `~/.pi/agent/thinking-box.json` and merges them into the in-memory `config`. The user config file is created lazily — only written the first time a `/thinking-box` command changes a setting. Every `/thinking-box` subcommand persists changes immediately via `persistConfig()`. This means settings survive pi restarts, `/reload`, and package updates — no reliance on session history.
+Defaults are imported from `config.json` (bundled with the extension, read-only). On `session_start`, `loadConfig()` reads user overrides from `~/.pi/agent/config/thinking-box.json` and merges them into the in-memory `config`. The user config file is created lazily — only written the first time a `/thinking-box` command changes a setting. Every `/thinking-box` subcommand persists changes immediately via `persistConfig()`. This means settings survive pi restarts, `/reload`, and package updates — no reliance on session history.
 
 ### 2. Theme access
 
@@ -171,14 +171,14 @@ Two factory functions create submenus that open inline rather than closing the s
 | pi switches to `#private` fields | Very low | Critical | Would need upstream extension hook |
 | Theme change (dark→light) | Common | Visual match | Text colors follow theme; background is user-configured hex (static by design) |
 | Pi changes the globalThis symbol key | Very low | Critical | Would break Pi's own internal code too — unlikely without major refactor |
-| `/reload` loses in-memory config | Low | Medium | Config restored from `~/.pi/agent/thinking-box.json` on next `session_start` |
+| `/reload` loses in-memory config | Low | Medium | Config restored from `~/.pi/agent/config/thinking-box.json` on next `session_start` |
 
 ## Config persistence
 
 ```
 Extension dir (bundled, read-only)       User dir (writable, survives updates)
 ┌──────────────────────────────┐         ┌───────────────────────────────────┐
-│ config.json                  │         │ ~/.pi/agent/thinking-box.json     │
+│ config.json                  │         │ ~/.pi/agent/config/thinking-box.json     │
 │   enabled: true              │  merge  │   bgColor: "#1e1e2e"              │
 │   bgColor: "#2d2d30"         │ ──────► │   paddingX: 2                     │
 │   paddingX: 1                │         │                                   │

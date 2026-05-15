@@ -26,7 +26,7 @@ Run `/thinking-box` to open an interactive settings menu with a live preview. Co
 - **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
 - **Show Line Count** — display the number of lines in thinking block headers
 
-All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/thinking-box.json`.
+All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/config/thinking-box.json`.
 
 ### Color Presets
 
@@ -36,7 +36,7 @@ Navigate the color picker with arrow keys — the preview updates live as you br
 
 ## Configuration
 
-Config persists across sessions to `~/.pi/agent/thinking-box.json`. Changes survive pi restarts, reloads, and package updates. Defaults ship in `config.json` inside the extension directory.
+Config persists across sessions to `~/.pi/agent/config/thinking-box.json`. Changes survive pi restarts, reloads, and package updates. Defaults ship in `config.json` inside the extension directory.
 
 **Defaults:**
 

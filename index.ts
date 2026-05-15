@@ -9,7 +9,7 @@
  * Commands:
  *   /thinking-box  Opens an interactive settings menu to configure all options.
  *
- * User config persists to ~/.pi/agent/thinking-box.json — survives package updates.
+ * User config persists to ~/.pi/agent/config/thinking-box.json — survives package updates.
  *
  * Implementation: monkey-patches AssistantMessageComponent.prototype.updateContent
  * to wrap thinking Markdown in a Box with configurable background, padding, header,
@@ -18,8 +18,8 @@
  * follow the theme.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile, rename, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -66,8 +66,11 @@ function getTheme(): Theme {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** User config lives in ~/.pi/agent/ so it survives package updates. */
-const USER_CONFIG_FILE = join(getAgentDir(), "thinking-box.json");
+/** The old location of the user config (pre-migration to config/ subdirectory). */
+const OLD_USER_CONFIG_FILE = join(getAgentDir(), "thinking-box.json");
+
+/** User config lives in ~/.pi/agent/config/ so it survives package updates. */
+const USER_CONFIG_FILE = join(getAgentDir(), "config", "thinking-box.json");
 
 // ---------------------------------------------------------------------------
 // Runtime state (module-level)
@@ -155,10 +158,14 @@ function createThinkingHeader(hideThinking: boolean, thinkingText: string): Text
 /** Build the thinking level suffix string (e.g., " · medium"), or empty if disabled/off. */
 function buildLevelSuffix(): string {
 	if (!config.showThinkingLevel || !piApi) return "";
-	const level = piApi.getThinkingLevel();
-	if (!level || level === "off") return "";
-	const t = getTheme();
-	return " " + t.fg("dim", "·") + " " + t.fg("dim", level);
+  try {
+     const level = piApi.getThinkingLevel();
+     if (!level || level === "off") return "";
+     const t = getTheme();
+     return " " + t.fg("dim", "·") + " " + t.fg("dim", level);
+  } catch {
+     return ""; // piApi is stale after session reload — degrade gracefully
+  }
 }
 
 /** Build the line count suffix string (e.g., " · 47 lines"), or empty if disabled. */
@@ -174,12 +181,23 @@ function buildLineCountSuffix(thinkingText: string): string {
 // ---------------------------------------------------------------------------
 
 async function persistConfig(): Promise<void> {
-	await mkdir(getAgentDir(), { recursive: true });
+	await mkdir(dirname(USER_CONFIG_FILE), { recursive: true });
 	const json = JSON.stringify(config, null, 2) + "\n";
 	await writeFile(USER_CONFIG_FILE, json, "utf-8");
 }
 
 async function loadConfig(): Promise<void> {
+	// Migrate old config file to new location if it exists
+	try {
+		const s = await stat(OLD_USER_CONFIG_FILE);
+		if (s.isFile()) {
+			await mkdir(dirname(USER_CONFIG_FILE), { recursive: true });
+			await rename(OLD_USER_CONFIG_FILE, USER_CONFIG_FILE);
+		}
+	} catch {
+		// Old file doesn't exist — nothing to migrate
+	}
+
 	try {
 		const raw = await readFile(USER_CONFIG_FILE, "utf-8");
 		const parsed = JSON.parse(raw) as Partial<ThinkingBoxConfig>;
@@ -581,7 +599,6 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								selectTheme,
 								(color: string) => {
 									config.bgColor = color;
-									config.enabled = true;
 									buildPreview();
 									tui.requestRender();
 								},
@@ -668,97 +685,100 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 						const label = config.headerLabel || "Thinking";
 						let suffix = "";
 						if (config.showThinkingLevel && piApi) {
-							const level = piApi.getThinkingLevel();
-							if (level && level !== "off") {
-								suffix = " " + theme.fg("dim", "·") + " " + theme.fg("dim", level);
+              try {
+                const level = piApi.getThinkingLevel();
+                if (level && level !== "off") {
+                  suffix = " " + theme.fg("dim", "·") + " " + theme.fg("dim", level);
+                }
+              } catch {
+                // piApi is stale after session reload — skip level in preview
+              }
+						}
+							if (config.showLineCount) {
+								suffix += " " + theme.fg("dim", "·") + " " + theme.fg("dim", "3 lines");
 							}
+							const arrow = config.showArrow ? theme.fg("accent", theme.bold("▼")) + " " : "";
+							const headerLine = arrow + theme.fg("thinkingText", label + suffix);
+							previewContainer.addChild(new Text(headerLine, 1, 0));
 						}
-						if (config.showLineCount) {
-							suffix += " " + theme.fg("dim", "·") + " " + theme.fg("dim", "3 lines");
-						}
-						const arrow = config.showArrow ? theme.fg("accent", theme.bold("▼")) + " " : "";
-						const headerLine = arrow + theme.fg("thinkingText", label + suffix);
-						previewContainer.addChild(new Text(headerLine, 1, 0));
-					}
 
-					// Thinking box with background + padding
-					const bgFn = createBgFn(config.bgColor);
-					const box = new Box(config.paddingX, config.paddingY, bgFn);
+						// Thinking box with background + padding
+						const bgFn = createBgFn(config.bgColor);
+						const box = new Box(config.paddingX, config.paddingY, bgFn);
 
-					const previewTextStr = "This preview shows how thinking blocks will appear.\n" +
-						"Background, padding, header, and label match\n" +
-						"your current configuration.";
-					const previewBody = theme.fg(
-						"thinkingText",
-						theme.italic(previewTextStr),
+						const previewTextStr = "This preview shows how thinking blocks will appear.\n" +
+							"Background, padding, header, and label match\n" +
+							"your current configuration.";
+						const previewBody = theme.fg(
+							"thinkingText",
+							theme.italic(previewTextStr),
+						);
+						box.addChild(new Text(previewBody, 1, 0));
+						previewContainer.addChild(box);
+					};
+
+					// Initial preview render
+					buildPreview();
+
+					container.addChild(new Spacer(1));
+
+					const settingsList = new SettingsList(
+						items,
+						Math.min(items.length + 2, 15),
+						slTheme,
+						(id, newValue) => {
+							switch (id) {
+								case "enabled":
+									config.enabled = newValue === "on";
+									if (config.enabled && !config.bgColor) {
+										config.bgColor = defaults.bgColor;
+									}
+									break;
+								case "bg":
+									config.bgColor = newValue || defaults.bgColor;
+									break;
+								case "paddingX":
+									config.paddingX = parseInt(newValue, 10);
+									break;
+								case "paddingY":
+									config.paddingY = parseInt(newValue, 10);
+									break;
+								case "showHeader":
+									config.showHeader = newValue === "on";
+									break;
+								case "headerLabel":
+									config.headerLabel = newValue || defaults.headerLabel;
+									break;
+								case "showThinkingLevel":
+									config.showThinkingLevel = newValue === "on";
+									break;
+								case "showArrow":
+									config.showArrow = newValue === "on";
+									break;
+								case "showLineCount":
+									config.showLineCount = newValue === "on";
+									break;
+							}
+							persistConfig();
+							buildPreview();
+							tui.requestRender();
+						},
+						() => done(undefined),
+						{ enableSearch: true },
 					);
-					box.addChild(new Text(previewBody, 1, 0));
-					previewContainer.addChild(box);
-				};
 
-				// Initial preview render
-				buildPreview();
+					container.addChild(settingsList);
 
-				container.addChild(new Spacer(1));
+					// Bottom border
+					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
-				const settingsList = new SettingsList(
-					items,
-					Math.min(items.length + 2, 15),
-					slTheme,
-					(id, newValue) => {
-						switch (id) {
-							case "enabled":
-								config.enabled = newValue === "on";
-								if (config.enabled && !config.bgColor) {
-									config.bgColor = defaults.bgColor;
-								}
-								break;
-							case "bg":
-								config.bgColor = newValue || defaults.bgColor;
-								config.enabled = true;
-								break;
-							case "paddingX":
-								config.paddingX = parseInt(newValue, 10);
-								break;
-							case "paddingY":
-								config.paddingY = parseInt(newValue, 10);
-								break;
-							case "showHeader":
-								config.showHeader = newValue === "on";
-								break;
-							case "headerLabel":
-								config.headerLabel = newValue || defaults.headerLabel;
-								break;
-							case "showThinkingLevel":
-								config.showThinkingLevel = newValue === "on";
-								break;
-							case "showArrow":
-								config.showArrow = newValue === "on";
-								break;
-							case "showLineCount":
-								config.showLineCount = newValue === "on";
-								break;
-						}
-						persistConfig();
-						buildPreview();
-						tui.requestRender();
-					},
-					() => done(undefined),
-					{ enableSearch: true },
-				);
-
-				container.addChild(settingsList);
-
-				// Bottom border
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						settingsList.handleInput?.(data);
-						tui.requestRender();
-					},
+					return {
+						render: (w: number) => container.render(w),
+						invalidate: () => container.invalidate(),
+						handleInput: (data: string) => {
+							settingsList.handleInput?.(data);
+							tui.requestRender();
+						},
 				};
 			});
 

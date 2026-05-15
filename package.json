@@ -1,6 +1,6 @@
 {
   "name": "pi-thinking-box",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Wrap Pi agent thinking blocks in a styled background box.",
   "keywords": [
     "pi-package",
