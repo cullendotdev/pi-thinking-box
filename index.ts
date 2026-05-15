@@ -181,9 +181,17 @@ function buildLineCountSuffix(thinkingText: string): string {
 // ---------------------------------------------------------------------------
 
 async function persistConfig(): Promise<void> {
+	// Only persist keys that differ from defaults (overrides-only delta).
+	// Missing keys in the user file fall through to config.json defaults,
+	// so new settings added in future versions default correctly.
+	const overrides: Partial<ThinkingBoxConfig> = {};
+	for (const key of Object.keys(config) as (keyof ThinkingBoxConfig)[]) {
+		if (config[key] !== (defaults as Record<string, unknown>)[key]) {
+			(overrides as Record<string, unknown>)[key] = config[key];
+		}
+	}
 	await mkdir(dirname(USER_CONFIG_FILE), { recursive: true });
-	const json = JSON.stringify(config, null, 2) + "\n";
-	await writeFile(USER_CONFIG_FILE, json, "utf-8");
+	await writeFile(USER_CONFIG_FILE, JSON.stringify(overrides, null, 2) + "\n", "utf-8");
 }
 
 async function loadConfig(): Promise<void> {
@@ -567,10 +575,10 @@ function createLabelSubmenu(
 
 export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 	piApi = pi;
-	applyMonkeyPatch();
 
 	pi.on("session_start", async () => {
 		await loadConfig();
+		applyMonkeyPatch();
 	});
 
 	pi.registerCommand("thinking-box", {

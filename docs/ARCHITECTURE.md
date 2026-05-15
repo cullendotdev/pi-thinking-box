@@ -182,12 +182,13 @@ Extension dir (bundled, read-only)       User dir (writable, survives updates)
 │   enabled: true              │  merge  │   bgColor: "#1e1e2e"              │
 │   bgColor: "#2d2d30"         │ ──────► │   paddingX: 2                     │
 │   paddingX: 1                │         │                                   │
-│   paddingY: 1                │         │ (created lazily on first change)  │
+│   paddingY: 1                │         │   (only overrides persisted)      │
+│                              │         │ (created lazily on first change)  │
 └──────────────────────────────┘         └───────────────────────────────────┘
 ```
 
 On `session_start`: read user config → shallow-merge over defaults → in-memory `config`.
-On `/thinking-box` command: write `config` → user config file (creates if missing).
+On `/thinking-box` command: write only overrides (deltas from defaults) → user config file (creates if missing). Missing keys fall through to config.json defaults — new settings added in future versions default correctly without migration.
 User config is optional — defaults work without any file on disk.
 
 ## Files
