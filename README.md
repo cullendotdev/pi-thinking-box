@@ -24,7 +24,7 @@ Run `/thinking-box` to open an interactive settings menu with a live preview. Co
 - **Show Header** — toggle a header bar above each thinking block
 - **Header Label** — customise the header text (default: "Thinking")
 - **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
-- **Show Line Count** — display the number of lines in thinking block headers
+- **Show Line Count (Collapsed) ** — display the number of lines in thinking block (Only shows when thinking block is collapsed)
 
 All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/config/thinking-box.json`.
 

@@ -133,25 +133,27 @@ function errorStyle(text: string): string {
 
 /**
  * Build the thinking block header line.
- * Format: "▼ {label} · {level} · {N lines}" or "▶ {label} · {level} · {N lines} (hidden)".
+ * Format:
+ * - collapsed: "▶ {label} · {level} · {N lines} (hidden)"
+ * - expanded: "▼ {label} · {level}".
  * Returns a Text component styled with the active theme.
  */
 function createThinkingHeader(hideThinking: boolean, thinkingText: string): Text {
 	const t = getTheme();
 	const label = config.headerLabel || "Thinking";
 	const levelSuffix = buildLevelSuffix();
-	const lineCountSuffix = buildLineCountSuffix(thinkingText);
 
 	if (hideThinking) {
 		// Collapsed state: "▶ {label}[ · {level}][ · {N lines}] (hidden)"
+		const lineCountSuffix = buildLineCountSuffix(thinkingText);
 		const arrow = config.showArrow ? "▶ " : "";
 		const text = t.italic(t.fg("thinkingText", `${arrow}${label}${levelSuffix}${lineCountSuffix} (hidden)`));
 		return new Text(text, 1, 0);
 	}
 
-	// Expanded state: "▼ {label}[ · {level}][ · {N lines}]"
+	// Expanded state: "▼ {label}[ · {level}]"
 	const arrow = config.showArrow ? t.fg("accent", t.bold("▼")) + " " : "";
-	const headerText = arrow + t.fg("thinkingText", label + levelSuffix + lineCountSuffix);
+	const headerText = arrow + t.fg("thinkingText", label + levelSuffix);
 	return new Text(headerText, 1, 0);
 }
 
@@ -651,8 +653,8 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 					},
 				{
 					id: "showLineCount",
-					label: "Show Line Count",
-					description: "Display the number of lines in thinking block headers",
+					label: "Show Line Count (Collapsed)",
+					description: "Display the number of lines in thinking block (Only shows when thinking block is collapsed)",
 					currentValue: config.showLineCount ? "on" : "off",
 					values: ["on", "off"],
 				},
@@ -702,9 +704,6 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
                 // piApi is stale after session reload — skip level in preview
               }
 						}
-							if (config.showLineCount) {
-								suffix += " " + theme.fg("dim", "·") + " " + theme.fg("dim", "3 lines");
-							}
 							const arrow = config.showArrow ? theme.fg("accent", theme.bold("▼")) + " " : "";
 							const headerLine = arrow + theme.fg("thinkingText", label + suffix);
 							previewContainer.addChild(new Text(headerLine, 1, 0));

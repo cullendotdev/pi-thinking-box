@@ -110,7 +110,7 @@ The `/thinking-box` command opens an interactive settings UI built with `Setting
 | Show Header | Toggle (on/off) | SelectList |
 | Header Label | Inline Input submenu | Any text |
 | Show Thinking Level | Toggle (on/off) | SelectList |
-| Show Line Count | Toggle (on/off) | SelectList |
+| Show Line Count (Collapsed) | Toggle (on/off) | SelectList |
 | Show Arrow | Toggle (on/off) | SelectList |
 
 **Live preview:** A real-time `Box` preview shows how thinking blocks will render with the current settings. It updates on every selection change (including arrow-key navigation in the color picker).
