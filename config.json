@@ -1,6 +1,10 @@
 {
   "enabled": true,
+  "displayMode": "background",
   "bgColor": "#343541",
+  "borderColor": "#5f87ff",
+  "borderThickness": "thin",
+  "roundedCorners": true,
   "paddingX": 0,
   "paddingY": 1,
   "showHeader": true,

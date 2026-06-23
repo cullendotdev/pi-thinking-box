@@ -19,8 +19,15 @@ Restart pi or run `/reload` after install.
 Run `/thinking-box` to open an interactive settings menu with a live preview. Configure everything in one place:
 
 - **Enabled** — toggle the thinking box on/off
-- **Background Color** — choose from 9 presets (VS Code Dark, Dracula, Tokyo Night, etc.) or enter a custom hex color
-- **Padding X / Y** — horizontal and vertical padding inside the box (0–5)
+- **Display Mode** — `background` (filled box) or `bordered` (drawn border around the text)
+- **Customize Thinking Box** — submenu in `background` mode that groups box styling:
+  - **Background Color** — choose from 9 presets (VS Code Dark, Dracula, Tokyo Night, etc.) or enter a custom hex color
+  - **Padding X** — horizontal padding inside the box (0–5 characters)
+  - **Padding Y** — vertical padding inside the box (0–5 lines)
+- **Customize Border** — submenu in `bordered` mode that groups all border settings:
+  - **Border Color** — color of the border glyphs
+  - **Border Thickness** — `thin` (─│) or `thick` (━┃)
+  - **Rounded Corners** — `on` (╭╮╰╯) or `off` (┌┐└┘); only applies to thin borders — when Border Thickness is `thick` this row is rendered muted + strikethrough (both label and value) and the toggle is disabled (Unicode has no heavy rounded corner glyphs)
 - **Show Header** — toggle a header bar above each thinking block
 - **Header Label** — customise the header text (default: "Thinking")
 - **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
@@ -41,7 +48,11 @@ Config persists across sessions to `~/.pi/agent/config/thinking-box.json`. Chang
 **Defaults:**
 
 - Enabled: `true`
+- Display Mode: `background`
 - Background: `#343541`
+- Border Color: `#5f87ff`
+- Border Thickness: `thin`
+- Rounded Corners: `true`
 - Padding: `0 × 1` (character cells)
 - Show Header: `true`
 - Header Label: `"Thinking"`
@@ -51,7 +62,7 @@ Config persists across sessions to `~/.pi/agent/config/thinking-box.json`. Chang
 
 ## How It Works
 
-The extension monkey-patches `AssistantMessageComponent.prototype.updateContent` to wrap thinking blocks in a `Box` component with configurable background and padding. Thinking text follows the active theme; the background is user-configured hex.
+The extension monkey-patches `AssistantMessageComponent.prototype.updateContent` to wrap thinking blocks in either a `Box` component (background mode, configurable fill color) or a custom `BorderedBox` component (bordered mode, configurable border style, color, and corner shape). Thinking text follows the active theme; the box border / fill colors are user-configured hex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full implementation details.
 

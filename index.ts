@@ -1,10 +1,16 @@
 /**
  * Thinking Box Extension
  *
- * Wraps agent thinking blocks in a styled box container (background + padding),
- * similar to how user messages have a background box. Adds an optional header
- * bar above each thinking block showing the collapse state, "Thinking…" label,
- * and agent/model name.
+ * Wraps agent thinking blocks in a styled container, similar to how user
+ * messages have a background box. Two display modes are supported:
+ *
+ * - `background`  — fills the box with a configurable hex color (the original
+ *                   behaviour, ChatGPT-style).
+ * - `bordered`    — draws a border around the thinking text. Border character
+ *                   set, border color, and corner style are all configurable.
+ *
+ * Both modes share the same padding / header / line-count settings and the
+ * same `bgColor` (which acts as an optional interior fill in bordered mode).
  *
  * Commands:
  *   /thinking-box  Opens an interactive settings menu to configure all options.
@@ -12,10 +18,11 @@
  * User config persists to ~/.pi/agent/config/thinking-box.json — survives package updates.
  *
  * Implementation: monkey-patches AssistantMessageComponent.prototype.updateContent
- * to wrap thinking Markdown in a Box with configurable background, padding, header,
- * and line count. Accesses the active theme via globalThis (same symbol-based
- * mechanism the original component uses) so thinking text, labels, and errors
- * follow the theme.
+ * to wrap thinking Markdown in either a `Box` (background mode) or a custom
+ * `BorderedBox` (bordered mode), with configurable background, padding,
+ * header, and line count. Accesses the active theme via globalThis (same
+ * symbol-based mechanism the original component uses) so thinking text,
+ * labels, and errors follow the theme.
  */
 
 import { mkdir, readFile, writeFile, rename, stat } from "node:fs/promises";
@@ -37,6 +44,7 @@ import {
 	Input,
 	Markdown,
 	SelectList,
+	type Component,
 	type SelectItem,
 	type SettingItem,
 	SettingsList,
@@ -78,7 +86,11 @@ const USER_CONFIG_FILE = join(getAgentDir(), "config", "thinking-box.json");
 
 interface ThinkingBoxConfig {
 	enabled: boolean;
+	displayMode: "background" | "bordered";
 	bgColor: string | null;
+	borderColor: string | null;
+	borderThickness: "thin" | "thick";
+	roundedCorners: boolean;
 	paddingX: number;
 	paddingY: number;
 	showHeader: boolean;
@@ -88,7 +100,11 @@ interface ThinkingBoxConfig {
 	showLineCount: boolean;
 }
 
-let config: ThinkingBoxConfig = { ...defaults };
+// JSON imports widen string values to `string`; narrow back to the union so
+// the rest of the file is exhaustively type-checked.
+let config: ThinkingBoxConfig = {
+	...(defaults as unknown as ThinkingBoxConfig),
+};
 
 /** Reference to ExtensionAPI, set once during extension init. Used to query the current thinking level. */
 let piApi: ExtensionAPI | null = null;
@@ -126,6 +142,178 @@ function thinkingStyle(text: string): string {
 function errorStyle(text: string): string {
 	return getTheme().fg("error", text);
 }
+
+// ---------------------------------------------------------------------------
+// Border styles & BorderedBox
+// ---------------------------------------------------------------------------
+
+/** Characters that make up a border: corners + edges. */
+interface BorderChars {
+	topLeft: string;
+	topRight: string;
+	bottomLeft: string;
+	bottomRight: string;
+	horizontal: string;
+	vertical: string;
+}
+
+/**
+ * Border glyph tables keyed by thickness. The corner glyphs are square by
+ * default; `resolveBorderChars` swaps in the rounded pair for thin borders
+ * when the user opts in. Unicode has no standard heavy "rounded" corner, so
+ * the rounded flag is ignored when `borderThickness === "thick"`.
+ */
+const BORDER_STYLES: Record<ThinkingBoxConfig["borderThickness"], { square: BorderChars; rounded: BorderChars }> = {
+	// Thin lines: ─ │ with square (┌┐└┘) or rounded (╭╮╰╯) corners
+	thin: {
+		square: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│" },
+		rounded: { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│" },
+	},
+	// Heavy lines: ━ ┃ with square corners (┏┓┗┛)
+	thick: {
+		square: { topLeft: "┏", topRight: "┓", bottomLeft: "┗", bottomRight: "┛", horizontal: "━", vertical: "┃" },
+		rounded: { topLeft: "┏", topRight: "┓", bottomLeft: "┗", bottomRight: "┛", horizontal: "━", vertical: "┃" },
+	},
+};
+
+/**
+ * Resolve the effective border glyphs for the current config. Rounded corners
+ * only apply to thin borders.
+ */
+function resolveBorderChars(thickness: ThinkingBoxConfig["borderThickness"], rounded: boolean): BorderChars {
+	const table = BORDER_STYLES[thickness];
+	return rounded && thickness === "thin" ? table.rounded : table.square;
+}
+
+/** Convert hex (with or without #) to ANSI truecolor foreground escape. */
+function hexToAnsiFg(hex: string): string {
+	const clean = hex.startsWith("#") ? hex.slice(1) : hex;
+	const r = parseInt(clean.slice(0, 2), 16);
+	const g = parseInt(clean.slice(2, 4), 16);
+	const b = parseInt(clean.slice(4, 6), 16);
+	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+		throw new Error(`Invalid hex color: ${hex}`);
+	}
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+/** Create a foreground-fn for border glyphs from a hex color string. */
+function createBorderFgFn(hexColor: string): (text: string) => string {
+	const ansiFg = hexToAnsiFg(hexColor);
+	return (text: string) => `${ansiFg}${text}\x1b[39m`;
+}
+
+/**
+ * BorderedBox — a Box that also draws a border on all four sides.
+ *
+ * The interior is delegated to a standard `Box` (with padding + optional bg).
+ * Border glyphs are placed at column 0 / (width-1) of every line, and a full
+ * top/bottom border line is prepended/appended. The bg color (if any) only
+ * covers the interior — the border glyphs sit on the parent's background.
+ *
+ * Why not extend Box directly? `Box` has no concept of borders, and the
+ * `paddingX/Y` semantics differ (Box pads each line; BorderedBox needs a
+ * different layout so the interior's padded lines align under the border).
+ * Wrapping an inner Box keeps the bg + padding logic identical to the
+ * background mode.
+ */
+class BorderedBox implements Container {
+	children: Component[] = [];
+	private inner: Box;
+	private chars: BorderChars;
+	private borderColor: (text: string) => string;
+	private cache?: { width: number; bgSample: string | undefined; childLines: string[]; lines: string[] };
+
+	constructor(
+		paddingX: number,
+		paddingY: number,
+		bgFn: ((text: string) => string) | undefined,
+		chars: BorderChars,
+		borderColor: (text: string) => string,
+	) {
+		this.inner = new Box(paddingX, paddingY, bgFn);
+		this.chars = chars;
+		this.borderColor = borderColor;
+	}
+
+	addChild(component: Component): void {
+		this.children.push(component);
+		this.inner.addChild(component);
+		this.invalidate();
+	}
+
+	removeChild(component: Component): void {
+		const index = this.children.indexOf(component);
+		if (index !== -1) {
+			this.children.splice(index, 1);
+		}
+		// Inner Box manages its own child list; rebuild by clearing + re-adding.
+		this.inner.clear();
+		for (const c of this.children) this.inner.addChild(c);
+		this.invalidate();
+	}
+
+	clear(): void {
+		this.children = [];
+		this.inner.clear();
+		this.invalidate();
+	}
+
+	invalidate(): void {
+		this.cache = undefined;
+		this.inner.invalidate();
+		for (const c of this.children) c.invalidate?.();
+	}
+
+	private matchCache(width: number, childLines: string[], bgSample: string | undefined): boolean {
+		const cache = this.cache;
+		return (
+			!!cache &&
+			cache.width === width &&
+			cache.bgSample === bgSample &&
+			cache.childLines.length === childLines.length &&
+			cache.childLines.every((line, i) => line === childLines[i])
+		);
+	}
+
+	render(width: number): string[] {
+		if (this.children.length === 0) return [];
+
+		// The border takes 2 columns total (1 left, 1 right) and 2 rows total
+		// (1 top, 1 bottom). Need at least 3 columns / 3 rows to draw anything.
+		if (width < 3) return [];
+
+		const innerWidth = width - 2;
+		const innerLines = this.inner.render(innerWidth);
+		if (innerLines.length === 0) return [];
+
+		// Sample bg so we can detect changes (mirrors Box's invalidation strategy).
+		// We can detect the inner Box's bgFn by looking at the first inner line —
+		// it has been bg'd by the Box already, so we use the line itself as the
+		// "what did the bg produce" signal.
+		const bgSample = innerLines[0];
+
+		if (this.matchCache(width, innerLines, bgSample)) {
+			return this.cache!.lines;
+		}
+
+		const { topLeft, topRight, bottomLeft, bottomRight, horizontal, vertical } = this.chars;
+		const topBorder = this.borderColor(topLeft + horizontal.repeat(innerWidth) + topRight);
+		const bottomBorder = this.borderColor(bottomLeft + horizontal.repeat(innerWidth) + bottomRight);
+		const leftBorder = this.borderColor(vertical);
+		const rightBorder = this.borderColor(vertical);
+
+		const lines: string[] = [topBorder];
+		for (const innerLine of innerLines) {
+			lines.push(leftBorder + innerLine + rightBorder);
+		}
+		lines.push(bottomBorder);
+
+		this.cache = { width, bgSample, childLines: innerLines, lines };
+		return lines;
+	}
+}
+
 
 // ---------------------------------------------------------------------------
 // Header rendering
@@ -210,7 +398,22 @@ async function loadConfig(): Promise<void> {
 
 	try {
 		const raw = await readFile(USER_CONFIG_FILE, "utf-8");
-		const parsed = JSON.parse(raw) as Partial<ThinkingBoxConfig>;
+		const parsed = JSON.parse(raw) as Partial<ThinkingBoxConfig> & {
+			// Legacy fields from earlier iterations that need migration to
+			// the current schema. `borderStyle` was a finer-grained enum
+			// that has since been replaced by the simpler `borderThickness`
+			// + `roundedCorners` pair.
+			borderStyle?: "single" | "double" | "rounded" | "thick" | "ascii";
+		};
+		// Migrate the legacy `borderStyle` enum to the current
+		// `borderThickness` flag. Only "thick" maps to "thick"; every
+		// other value (single/double/rounded/ascii) collapses to "thin".
+		// The `borderStyle` field is then dropped from the persisted
+		// file on the next `persistConfig()` call.
+		if (parsed.borderStyle && !parsed.borderThickness) {
+			parsed.borderThickness = parsed.borderStyle === "thick" ? "thick" : "thin";
+		}
+		delete parsed.borderStyle;
 		config = { ...config, ...parsed };
 	} catch {
 		// File missing or parse error — keep defaults from config.json
@@ -240,8 +443,12 @@ function applyMonkeyPatch(): void {
 		this: AssistantMessageComponent,
 		message: AssistantMessage,
 	): void {
-		// If disabled or no background color, delegate to the original.
-		if (!config.enabled || !config.bgColor) {
+		// Bail-out conditions: disabled, or the active mode is missing its
+		// required color (bgColor for background, borderColor for bordered).
+		const missingColor =
+			(config.displayMode === "background" && !config.bgColor) ||
+			(config.displayMode === "bordered" && !config.borderColor);
+		if (!config.enabled || missingColor) {
 			originalUpdateContent!.call(this, message);
 			return;
 		}
@@ -296,15 +503,31 @@ function applyMonkeyPatch(): void {
 						thinkingSection.addChild(createThinkingHeader(false, content.thinking.trim()));
 					}
 
-					// Thinking content wrapped in Box with background + padding.
-					const bgFn = createBgFn(config.bgColor);
+					// Thinking content wrapped in a styled container.
+					// Mode = "background" → Box with bg color.
+					// Mode = "bordered"  → BorderedBox with border (bg optional).
 					const thinkingMd = new Markdown(content.thinking.trim(), 1, 0, mdTheme, {
 						color: (text: string) => thinkingStyle(text),
 						italic: true,
 					});
 
-					const thinkingBox = new Box(config.paddingX, config.paddingY, bgFn);
-					thinkingBox.addChild(thinkingMd);
+					let thinkingBox: Component;
+					if (config.displayMode === "bordered") {
+						const borderFgFn = createBorderFgFn(config.borderColor!);
+						const chars = resolveBorderChars(config.borderThickness, config.roundedCorners);
+						// Bordered mode is border-only: no interior background fill,
+						// and padding is forced to 0 so the border sits flush with
+						// the text. The configured padding values are preserved
+						// for when the user switches back to background mode.
+						const bordered = new BorderedBox(0, 0, undefined, chars, borderFgFn);
+						bordered.addChild(thinkingMd);
+						thinkingBox = bordered;
+					} else {
+						const bgFn = createBgFn(config.bgColor!);
+						const box = new Box(config.paddingX, config.paddingY, bgFn);
+						box.addChild(thinkingMd);
+						thinkingBox = box;
+					}
 					thinkingSection.addChild(thinkingBox);
 
 					self.contentContainer.addChild(thinkingSection);
@@ -571,6 +794,305 @@ function createLabelSubmenu(
 	return container;
 }
 
+/**
+ * Build a short human-readable summary of the current border config.
+ * Used as the `currentValue` of the "Customize Border" item in the main
+ * settings list so the user can see their border settings at a glance
+ * without opening the submenu.
+ */
+function summarizeBorderConfig(): string {
+	if (config.borderThickness === "thick") return "thick";
+	return config.roundedCorners ? "thin / rounded" : "thin / square";
+}
+
+/**
+ * Wrap a `SettingsListTheme` to apply muted + strikethrough styling to one
+ * specific row (both label and value). Used to visually disable the
+ * "Rounded Corners" row when `borderThickness === "thick"` (heavy borders
+ * always have square corners — Unicode has no heavy rounded corner glyphs).
+ *
+ * The disabled state is read via the `isDisabled` callback on every render,
+ * so toggling `borderThickness` inside the submenu updates the row styling
+ * immediately without rebuilding the submenu.
+ *
+ * Implementation note: `SettingsListTheme.value(text, selected)` doesn't
+ * receive the row label, so we can't match the value to its row directly.
+ * Instead, the wrapped `label` function stashes a flag in a closure
+ * variable that the next `value` call reads. The SettingsList always calls
+ * `label` immediately before `value` for each row, so the flag is always
+ * fresh.
+ */
+function wrapSettingsListThemeWithDisabledRow(
+	baseTheme: ReturnType<typeof getSettingsListTheme>,
+	disabledLabel: string,
+	isDisabled: () => boolean,
+): ReturnType<typeof getSettingsListTheme> {
+	let nextValueIsDisabled = false;
+	const matches = (labelText: string) => labelText.trimStart().startsWith(disabledLabel);
+	const style = (text: string): string => {
+		const t = getTheme();
+		// Apply strikethrough first, then override the foreground with the
+		// muted theme color. The row stays navigable so the current value
+		// remains visible.
+		return t.fg("muted", t.strikethrough(text));
+	};
+	return {
+		...baseTheme,
+		label: (text: string, selected: boolean) => {
+			const disabled = isDisabled() && matches(text);
+			nextValueIsDisabled = disabled;
+			if (disabled) return style(text);
+			return baseTheme.label(text, selected);
+		},
+		value: (text: string, selected: boolean) => {
+			if (nextValueIsDisabled) return style(text);
+			return baseTheme.value(text, selected);
+		},
+	};
+}
+
+/**
+ * Build the "Customize Border" submenu — a SettingsList with three items:
+ *   1. Border Color   — color picker submenu (reuses createColorSubmenu)
+ *   2. Border Thickness — thin | thick
+ *   3. Rounded Corners  — on | off
+ *
+ * `onChange(id, value)` fires when any item changes so the caller can
+ *   - persist the new value
+ *   - update the main "Customize Border" item's currentValue (summary)
+ *   - re-render the live preview
+ *   - request a TUI render
+ */
+function createCustomizeBorderSubmenu(
+	settingsListTheme: ReturnType<typeof getSettingsListTheme>,
+	selectListTheme: ReturnType<typeof getSelectListTheme>,
+	onChange: (id: string, newValue: string) => void,
+	done: () => void,
+): Container {
+	const container = new Container();
+
+	const subItems: SettingItem[] = [
+		{
+			id: "borderColor",
+			label: "Border Color",
+			description: `Current: ${config.borderColor || "(none)"}`,
+			currentValue: config.borderColor || "none",
+			submenu: (_currentValue, subDone) =>
+				createColorSubmenu(
+					config.borderColor ?? "",
+					selectListTheme,
+					(color: string) => {
+						config.borderColor = color;
+						onChange("borderColor", color);
+					},
+					subDone,
+				),
+		},
+		{
+			id: "borderThickness",
+			label: "Border Thickness",
+			description: "'thin' uses single-line characters (─│); 'thick' uses heavy characters (━┃).",
+			currentValue: config.borderThickness,
+			values: ["thin", "thick"],
+		},
+		{
+			id: "roundedCorners",
+			label: "Rounded Corners",
+			// Dynamic description: explain the no-op state when thick, the
+			// behaviour when thin. Getters are read on every render, so
+			// toggling borderThickness updates the description immediately.
+			get description() {
+				return config.borderThickness === "thick"
+					? "Heavy borders always have square corners — this option has no effect in thick mode."
+					: "Use rounded corners (╭╮╰╯) on thin borders.";
+			},
+			// Dynamic currentValue: always reflects the live config. The
+			// setter is a no-op because SettingsList.activateItem assigns
+			// `item.currentValue = newValue` after cycling; the real value
+			// comes from `config.roundedCorners` via the getter on the next
+			// render (and from the onChange callback that updates config).
+			get currentValue() {
+				return config.roundedCorners ? "on" : "off";
+			},
+			set currentValue(_v) {
+				// no-op: derived from `config.roundedCorners`
+			},
+			// Dynamic values: empty when thick so SettingsList.activateItem
+			// doesn't cycle the value (it only cycles when values.length > 0).
+			// The getter is re-evaluated on every render / keypress, so
+			// switching borderThickness to thin re-enables cycling instantly.
+			get values() {
+				return config.borderThickness === "thick" ? [] : ["on", "off"];
+			},
+		},
+	];
+
+	const subList = new SettingsList(
+		subItems,
+		Math.min(subItems.length + 2, 8),
+		// When borderThickness is thick, the "Rounded Corners" row is a
+		// visual no-op (Unicode has no heavy rounded corner glyphs). Wrap
+		// the theme so the row renders muted + strikethrough — but stays
+		// navigable, so the user can still see the current value.
+		wrapSettingsListThemeWithDisabledRow(
+			settingsListTheme,
+			"Rounded Corners",
+			() => config.borderThickness === "thick",
+		),
+		(id, newValue) => {
+			switch (id) {
+				case "borderColor":
+					// Color submenu handles its own onPreview; the color
+					// value is set there and onChange is called.
+					break;
+				case "borderThickness":
+					if (newValue === "thin" || newValue === "thick") {
+						config.borderThickness = newValue;
+						onChange(id, newValue);
+					}
+					break;
+				case "roundedCorners":
+					// Defense in depth: the item's `values` getter returns
+					// `[]` when borderThickness is thick, which prevents
+					// `SettingsList.activateItem` from cycling in the first
+					// place. If a future change ever bypasses that, we still
+					// ignore the toggle here so the value can't drift.
+					if (config.borderThickness === "thick") break;
+					config.roundedCorners = newValue === "on";
+					onChange(id, newValue);
+					break;
+			}
+		},
+		() => done(),
+	);
+
+	container.addChild(subList);
+
+	// Container has no built-in `handleInput`, so we manually forward
+	// input to the subList. The SettingsList itself delegates further
+	// to its own submenus (the color picker for Border Color), so this
+	// single forward is enough for the whole submenu tree.
+	container.handleInput = (data: string) => {
+		subList.handleInput?.(data);
+	};
+	container.invalidate = () => {
+		subList.invalidate?.();
+	};
+
+	return container;
+}
+
+/**
+ * Build a short human-readable summary of the current "thinking box"
+ * (background-mode) styling config. Used as the `currentValue` of the
+ * "Customize Thinking Box" item in the main settings list.
+ */
+function summarizeThinkingBoxConfig(): string {
+	return `${config.bgColor || "none"} · ${config.paddingX}\u00d7${config.paddingY}`;
+}
+
+/**
+ * Build the "Customize Thinking Box" submenu — a SettingsList with three items:
+ *   1. Background Color — color picker submenu (reuses createColorSubmenu)
+ *   2. Padding X        — 0 | 1 | 2 | 3 | 4 | 5
+ *   3. Padding Y        — 0 | 1 | 2 | 3 | 4 | 5
+ *
+ * Shown in the main settings list only when `displayMode === "background"`.
+ * In bordered mode the equivalent "Customize Border" submenu is shown instead
+ * and padding is forced to 0 (borders are the styling).
+ *
+ * `onChange(id, value)` fires when any item changes so the caller can
+ *   - persist the new value
+ *   - update the main "Customize Thinking Box" item's currentValue (summary)
+ *   - re-render the live preview
+ *   - request a TUI render
+ */
+function createCustomizeThinkingBoxSubmenu(
+	settingsListTheme: ReturnType<typeof getSettingsListTheme>,
+	selectListTheme: ReturnType<typeof getSelectListTheme>,
+	onChange: (id: string, newValue: string) => void,
+	done: () => void,
+): Container {
+	const container = new Container();
+
+	const subItems: SettingItem[] = [
+		{
+			id: "bg",
+			label: "Background Color",
+			description: `Current: ${config.bgColor || "(none)"}`,
+			currentValue: config.bgColor || "none",
+			submenu: (_currentValue, subDone) =>
+				createColorSubmenu(
+					config.bgColor ?? "",
+					selectListTheme,
+					(color: string) => {
+						config.bgColor = color;
+						onChange("bg", color);
+					},
+					subDone,
+				),
+		},
+		{
+			id: "paddingX",
+			label: "Padding X",
+			description: "Horizontal padding inside the thinking box (in characters)",
+			currentValue: String(config.paddingX),
+			values: ["0", "1", "2", "3", "4", "5"],
+		},
+		{
+			id: "paddingY",
+			label: "Padding Y",
+			description: "Vertical padding inside the thinking box (in lines)",
+			currentValue: String(config.paddingY),
+			values: ["0", "1", "2", "3", "4", "5"],
+		},
+	];
+
+	const subList = new SettingsList(
+		subItems,
+		Math.min(subItems.length + 2, 8),
+		settingsListTheme,
+		(id, newValue) => {
+			switch (id) {
+				case "bg":
+					// Color submenu handles its own onPreview; the color value
+					// is set there and onChange is called.
+					break;
+				case "paddingX":
+					const n = parseInt(newValue, 10);
+					if (!Number.isNaN(n)) {
+						config.paddingX = n;
+						onChange(id, newValue);
+					}
+					break;
+				case "paddingY":
+					const m = parseInt(newValue, 10);
+					if (!Number.isNaN(m)) {
+						config.paddingY = m;
+						onChange(id, newValue);
+					}
+					break;
+			}
+		},
+		() => done(),
+	);
+
+	container.addChild(subList);
+
+	// Container has no built-in `handleInput`, so we manually forward
+	// input to the subList. The SettingsList itself delegates further
+	// to its own submenus (the color picker for Background Color), so
+	// this single forward is enough for the whole submenu tree.
+	container.handleInput = (data: string) => {
+		subList.handleInput?.(data);
+	};
+	container.invalidate = () => {
+		subList.invalidate?.();
+	};
+
+	return container;
+}
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -590,83 +1112,6 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 				const slTheme = getSettingsListTheme();
 				const selectTheme = getSelectListTheme();
 
-				const items: SettingItem[] = [
-					{
-						id: "enabled",
-						label: "Enabled",
-						description: "Wrap thinking blocks in a styled background box",
-						currentValue: config.enabled ? "on" : "off",
-						values: ["on", "off"],
-					},
-					{
-						id: "bg",
-						label: "Background Color",
-						description: `Current: ${config.bgColor || "(none)"}. Choose a preset or enter a custom hex color.`,
-						currentValue: config.bgColor || "none",
-						submenu: (_currentValue, subDone) =>
-							createColorSubmenu(
-								config.bgColor ?? "",
-								selectTheme,
-								(color: string) => {
-									config.bgColor = color;
-									buildPreview();
-									tui.requestRender();
-								},
-								subDone,
-							),
-					},
-					{
-						id: "paddingX",
-						label: "Padding X",
-						description: "Horizontal padding inside the thinking box (in characters)",
-						currentValue: String(config.paddingX),
-						values: ["0", "1", "2", "3", "4", "5"],
-					},
-					{
-						id: "paddingY",
-						label: "Padding Y",
-						description: "Vertical padding inside the thinking box (in lines)",
-						currentValue: String(config.paddingY),
-						values: ["0", "1", "2", "3", "4", "5"],
-					},
-					{
-						id: "showHeader",
-						label: "Show Header",
-						description: "Display a header bar above each thinking block",
-						currentValue: config.showHeader ? "on" : "off",
-						values: ["on", "off"],
-					},
-					{
-						id: "headerLabel",
-						label: "Header Label",
-						description: `Current: "${config.headerLabel}"`,
-						currentValue: config.headerLabel,
-						submenu: (_currentValue, subDone) =>
-							createLabelSubmenu(config.headerLabel, selectTheme, subDone),
-					},
-					{
-						id: "showThinkingLevel",
-						label: "Show Thinking Level",
-						description: "Append the current thinking level (e.g. 'medium') to the header",
-						currentValue: config.showThinkingLevel ? "on" : "off",
-						values: ["on", "off"],
-					},
-				{
-					id: "showLineCount",
-					label: "Show Line Count (Collapsed)",
-					description: "Display the number of lines in thinking block (Only shows when thinking block is collapsed)",
-					currentValue: config.showLineCount ? "on" : "off",
-					values: ["on", "off"],
-				},
-				{
-					id: "showArrow",
-					label: "Show Arrow",
-					description: "Show the ▼/▶ collapse indicator arrow in the header",
-					currentValue: config.showArrow ? "on" : "off",
-					values: ["on", "off"],
-				},
-				];
-
 				const container = new Container();
 
 				// Top border
@@ -683,9 +1128,23 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 				const buildPreview = (): void => {
 					previewContainer.clear();
 
-					if (!config.enabled || !config.bgColor) {
+					// Mode-aware bail-out messages.
+					if (!config.enabled) {
 						previewContainer.addChild(
-							new Text(theme.fg("dim", "  (Disabled — enable and set a color to preview)"), 0, 0),
+							new Text(theme.fg("dim", "  (Disabled — enable to preview)"), 0, 0),
+						);
+						return;
+					}
+					const missingModeColor =
+						(config.displayMode === "background" && !config.bgColor) ||
+						(config.displayMode === "bordered" && !config.borderColor);
+					if (missingModeColor) {
+						previewContainer.addChild(
+							new Text(
+								theme.fg("dim", `  (Set a ${config.displayMode === "background" ? "background" : "border"} color to preview)`),
+								0,
+								0,
+							),
 						);
 						return;
 					}
@@ -709,19 +1168,33 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 							previewContainer.addChild(new Text(headerLine, 1, 0));
 						}
 
-						// Thinking box with background + padding
-						const bgFn = createBgFn(config.bgColor);
-						const box = new Box(config.paddingX, config.paddingY, bgFn);
-
+						// Thinking body — same dispatch as the monkey-patch.
 						const previewTextStr = "This preview shows how thinking blocks will appear.\n" +
 							"Background, padding, header, and label match\n" +
 							"your current configuration.";
-						const previewBody = theme.fg(
-							"thinkingText",
-							theme.italic(previewTextStr),
+						const previewBody = new Text(
+							theme.fg("thinkingText", theme.italic(previewTextStr)),
+							1,
+							0,
 						);
-						box.addChild(new Text(previewBody, 1, 0));
-						previewContainer.addChild(box);
+
+						let previewBox: Component;
+						if (config.displayMode === "bordered") {
+							// Bordered mode is border-only: no interior background
+							// fill, and padding is forced to 0. Matches the
+							// monkey-patch so the preview is a faithful preview.
+							const borderFgFn = createBorderFgFn(config.borderColor!);
+							const chars = resolveBorderChars(config.borderThickness, config.roundedCorners);
+							const bordered = new BorderedBox(0, 0, undefined, chars, borderFgFn);
+							bordered.addChild(previewBody);
+							previewBox = bordered;
+						} else {
+							const bgFn = createBgFn(config.bgColor!);
+							const box = new Box(config.paddingX, config.paddingY, bgFn);
+							box.addChild(previewBody);
+							previewBox = box;
+						}
+						previewContainer.addChild(previewBox);
 					};
 
 					// Initial preview render
@@ -729,65 +1202,260 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 
 					container.addChild(new Spacer(1));
 
-					const settingsList = new SettingsList(
-						items,
-						Math.min(items.length + 2, 15),
-						slTheme,
-						(id, newValue) => {
-							switch (id) {
-								case "enabled":
-									config.enabled = newValue === "on";
-									if (config.enabled && !config.bgColor) {
-										config.bgColor = defaults.bgColor;
-									}
-									break;
-								case "bg":
-									config.bgColor = newValue || defaults.bgColor;
-									break;
-								case "paddingX":
-									config.paddingX = parseInt(newValue, 10);
-									break;
-								case "paddingY":
-									config.paddingY = parseInt(newValue, 10);
-									break;
-								case "showHeader":
-									config.showHeader = newValue === "on";
-									break;
-								case "headerLabel":
-									config.headerLabel = newValue || defaults.headerLabel;
-									break;
-								case "showThinkingLevel":
-									config.showThinkingLevel = newValue === "on";
-									break;
-								case "showArrow":
-									config.showArrow = newValue === "on";
-									break;
-								case "showLineCount":
-									config.showLineCount = newValue === "on";
-									break;
-							}
-							persistConfig();
-							buildPreview();
-							tui.requestRender();
-						},
-						() => done(undefined),
-						{ enableSearch: true },
-					);
-
-					container.addChild(settingsList);
+					// The settings list lives in its own container so we can clear
+					// and re-add it when the display mode changes (the Customize
+					// Border item only exists in bordered mode, Background Color
+					// only in background mode).
+					const settingsContainer = new Container();
+					container.addChild(settingsContainer);
 
 					// Bottom border
 					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+					// Mutable reference to the current settings list. Updated by
+					// rebuildSettingsList() so input handling always targets the
+					// live list.
+					let settingsList: SettingsList | null = null;
+
+					/**
+					 * Build the items rendered in the main settings list. Re-evaluated
+					 * every rebuild so `currentValue` reflects the latest config.
+					 * `displayMode` controls which color item is exposed — the
+					 * background fill is mutually exclusive with the border.
+					 */
+					const buildItems = (): SettingItem[] => {
+						const items: SettingItem[] = [
+							{
+								id: "enabled",
+								label: "Enabled",
+								description: "Wrap thinking blocks in a styled background box",
+								currentValue: config.enabled ? "on" : "off",
+								values: ["on", "off"],
+							},
+							{
+								id: "displayMode",
+								label: "Display Mode",
+								description: "How the thinking block is styled: background fill or a drawn border",
+								currentValue: config.displayMode,
+								values: ["background", "bordered"],
+							},
+						];
+
+						// Mode-specific styling submenu. Mutually exclusive:
+						//   - background → "Customize Thinking Box" (color + padding)
+						//   - bordered   → "Customize Border" (color + thickness + corners)
+						// Padding is hidden in bordered mode because it's forced to 0
+						// (the border is the styling; padding would just create a gap
+						// between the border and the text).
+						if (config.displayMode === "background") {
+							items.push({
+								id: "customizeThinkingBox",
+								label: "Customize Thinking Box",
+								description: `Color: ${config.bgColor || "(none)"} · Padding: ${config.paddingX}×${config.paddingY}`,
+								currentValue: summarizeThinkingBoxConfig(),
+								submenu: (_currentValue, subDone) =>
+									createCustomizeThinkingBoxSubmenu(
+										slTheme,
+										selectTheme,
+										(_id, _value) => {
+											// The submenu already wrote to `config`.
+											// Keep the main item's summary in sync and
+											// refresh the live preview.
+											settingsList?.updateValue("customizeThinkingBox", summarizeThinkingBoxConfig());
+											persistConfig();
+											buildPreview();
+											tui.requestRender();
+										},
+										subDone,
+									),
+							});
+						} else {
+							items.push({
+								id: "customizeBorder",
+								label: "Customize Border",
+								description: `Color: ${config.borderColor || "(none)"} · Thickness: ${config.borderThickness} · Corners: ${config.roundedCorners ? "rounded" : "square"}`,
+								currentValue: summarizeBorderConfig(),
+								submenu: (_currentValue, subDone) =>
+									createCustomizeBorderSubmenu(
+										slTheme,
+										selectTheme,
+										(_id, _value) => {
+											// The submenu already wrote to `config`. Just
+											// keep the main item's summary in sync and
+											// refresh the live preview.
+											settingsList?.updateValue("customizeBorder", summarizeBorderConfig());
+											persistConfig();
+											buildPreview();
+											tui.requestRender();
+										},
+										subDone,
+									),
+							});
+						}
+
+						items.push(
+							{
+								id: "showHeader",
+								label: "Show Header",
+								description: "Display a header bar above each thinking block",
+								currentValue: config.showHeader ? "on" : "off",
+								values: ["on", "off"],
+							},
+							{
+								id: "headerLabel",
+								label: "Header Label",
+								description: `Current: "${config.headerLabel}"`,
+								currentValue: config.headerLabel,
+								submenu: (_currentValue, subDone) =>
+									createLabelSubmenu(config.headerLabel, selectTheme, subDone),
+							},
+							{
+								id: "showThinkingLevel",
+								label: "Show Thinking Level",
+								description: "Append the current thinking level (e.g. 'medium') to the header",
+								currentValue: config.showThinkingLevel ? "on" : "off",
+								values: ["on", "off"],
+							},
+							{
+								id: "showLineCount",
+								label: "Show Line Count (Collapsed)",
+								description: "Display the number of lines in thinking block (Only shows when thinking block is collapsed)",
+								currentValue: config.showLineCount ? "on" : "off",
+								values: ["on", "off"],
+							},
+							{
+								id: "showArrow",
+								label: "Show Arrow",
+								description: "Show the ▼/▶ collapse indicator arrow in the header",
+								currentValue: config.showArrow ? "on" : "off",
+								values: ["on", "off"],
+							},
+						);
+
+						return items;
+					};
+
+					/**
+					 * Replace the current settings list with a fresh one built from
+					 * the latest config. Called after any item change so currentValue
+					 * labels and the visible item set (Customize Thinking Box ↔
+					 * Customize Border) reflect the current display mode.
+					 *
+					 * `preserveIndex` keeps the cursor on the same row it was on
+					 * before the rebuild (clamped to the new list length). Without
+					 * this, the cursor would jump back to row 0 ("Enabled") after
+					 * every mode toggle — very disorienting.
+					 */
+					const rebuildSettingsList = (preserveIndex?: number): void => {
+						const items = buildItems();
+						const newList = new SettingsList(
+							items,
+							Math.min(items.length + 2, 15),
+							slTheme,
+							(id, newValue) => {
+								const oldMode = config.displayMode;
+								switch (id) {
+									case "enabled":
+										config.enabled = newValue === "on";
+										// Auto-fill the missing color for the active mode so the
+										// preview + monkey-patch have something to draw with.
+										if (config.enabled) {
+											if (config.displayMode === "background" && !config.bgColor) {
+												config.bgColor = defaults.bgColor;
+											}
+											if (config.displayMode === "bordered" && !config.borderColor) {
+												config.borderColor = defaults.borderColor;
+											}
+										}
+										break;
+									case "displayMode":
+										if (newValue === "background" || newValue === "bordered") {
+											config.displayMode = newValue;
+											// Pre-fill the color the new mode needs so the
+											// preview is never empty after a mode switch.
+											if (newValue === "background" && !config.bgColor) {
+												config.bgColor = defaults.bgColor;
+											}
+											if (newValue === "bordered" && !config.borderColor) {
+												config.borderColor = defaults.borderColor;
+											}
+										}
+										break;
+									case "bg":
+									case "paddingX":
+									case "paddingY":
+										// Handled inside the Customize Thinking Box
+										// submenu. Reaching this case means the
+										// settings list is mis-wired.
+										break;
+									case "showHeader":
+										config.showHeader = newValue === "on";
+										break;
+									case "headerLabel":
+										config.headerLabel = newValue || defaults.headerLabel;
+										break;
+									case "showThinkingLevel":
+										config.showThinkingLevel = newValue === "on";
+										break;
+									case "showArrow":
+										config.showArrow = newValue === "on";
+										break;
+									case "showLineCount":
+										config.showLineCount = newValue === "on";
+										break;
+								}
+								persistConfig();
+
+								// If the display mode changed, the visible item set has
+								// changed shape (Customize Thinking Box ↔ Customize
+								// Border), so the list itself needs to be rebuilt
+								// from scratch.
+								if (oldMode !== config.displayMode) {
+									// Capture the cursor position so it stays on the
+									// same row (Display Mode, usually) after the rebuild.
+									// `selectedIndex` is private on SettingsList but
+									// accessible at runtime.
+									const oldIndex = (settingsList as unknown as { selectedIndex?: number })
+										?.selectedIndex;
+									rebuildSettingsList(oldIndex);
+								} else {
+									// Same shape — just refresh the currentValue of the
+									// item that changed (buildItems reads the updated
+									// config, so its snapshot is fresh).
+									const freshItems = buildItems();
+									const freshItem = freshItems.find((i) => i.id === id);
+									if (freshItem) settingsList?.updateValue(id, freshItem.currentValue);
+								}
+								buildPreview();
+								tui.requestRender();
+							},
+							() => done(undefined),
+							{ enableSearch: true },
+						);
+						// Restore the cursor to where it was before the rebuild.
+						// `selectedIndex` is private on SettingsList but accessible
+						// at runtime; clamp to the new item count to be safe.
+						if (typeof preserveIndex === "number") {
+							const clamped = Math.max(0, Math.min(preserveIndex, items.length - 1));
+							(newList as unknown as { selectedIndex: number }).selectedIndex = clamped;
+						}
+						settingsContainer.clear();
+						settingsContainer.addChild(newList);
+						settingsList = newList;
+					};
+
+					// Initial build.
+					rebuildSettingsList();
 
 					return {
 						render: (w: number) => container.render(w),
 						invalidate: () => container.invalidate(),
 						handleInput: (data: string) => {
-							settingsList.handleInput?.(data);
+							settingsList?.handleInput?.(data);
 							tui.requestRender();
 						},
-				};
-			});
+					};
+				});
 
 
 		},
