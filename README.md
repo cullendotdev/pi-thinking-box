@@ -31,13 +31,13 @@ Run `/thinking-box` to open an interactive settings menu with a live preview. Co
 - **Show Header** — toggle a header bar above each thinking block
 - **Header Label** — customise the header text (default: "Thinking")
 - **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
-- **Show Line Count (Collapsed) ** — display the number of lines in thinking block (Only shows when thinking block is collapsed)
+- **Show Line Count (Collapsed)** — display the rendered line count of collapsed thinking blocks (counted with the Markdown renderer so soft-wrap, code blocks, and lists are measured accurately, not just raw newlines)
 
 All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/config/thinking-box.json`.
 
 ### Color Presets
 
-Navigate the color picker with arrow keys — the preview updates live as you browse. Choose "Custom…" to enter any 6-digit hex color.
+Navigate the color picker with arrow keys — the preview updates live as you browse. Choose "Custom…" to enter any 6-digit hex color; the preview also updates live as you type a valid hex code.
 
 - Default (ChatGPT-style), VS Code Dark, Dark Blue-Gray, Dracula, Tokyo Night, Purple Twilight, Gruvbox Dark, Deep Black, Pure Black, Custom…
 

@@ -133,14 +133,17 @@ Four factory functions create submenus that open inline rather than closing the 
 **`createColorSubmenu(currentValue, selectListTheme, onPreview, done)`**
 - Renders a `SelectList` of `COLOR_PRESETS` (Default, VS Code Dark, Dracula, Tokyo Night, etc.)
 - `onPreview` fires on every arrow-key selection change — the main UI updates its preview box in real time
-- Selecting "Custom…" transitions to an `Input` field for hex entry (validates 6-digit hex)
-- Escape returns to the preset list
+- Selecting "Custom…" transitions to an `Input` field for hex entry; the preview resets to the saved color so you see what you're editing away from
+- While typing in the custom input, `onPreview` fires on every valid 6-digit hex (live preview as you type)
+- Enter confirms the hex value; Esc reverts to the saved color and returns to the preset list (or closes the submenu entirely if pressed on the preset list)
+- Uses the tui keybinding matcher (`getKeybindings().matches`) so Esc and Enter work on terminals with the Kitty keyboard protocol (Kitty, WezTerm, Ghostty, foot)
 - Used for `Background Color` (inside `Customize Thinking Box`) and `Border Color` (inside `Customize Border`)
 
 **`createLabelSubmenu(currentValue, selectListTheme, done)`**
 - Shows current label with an "Edit label…" option
 - Selecting it transitions to an inline `Input` field
 - Enter confirms the new label; Escape returns to the SelectList
+- Uses the tui keybinding matcher so Esc and Enter work on Kitty-protocol terminals
 - `currentValue` is reassigned on confirm so re-entering the submenu shows the updated label
 
 **`createCustomizeThinkingBoxSubmenu(settingsListTheme, selectListTheme, onChange, done)`**

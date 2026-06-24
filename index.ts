@@ -41,10 +41,12 @@ import {
 import {
 	Box,
 	Container,
+	getKeybindings,
 	Input,
 	Markdown,
 	SelectList,
 	type Component,
+	type MarkdownTheme,
 	type SelectItem,
 	type SettingItem,
 	SettingsList,
@@ -358,12 +360,60 @@ function buildLevelSuffix(): string {
   }
 }
 
+/**
+ * Passthrough `MarkdownTheme` used to count rendered lines without
+ * actually styling the output. All formatter functions return their
+ * input unchanged, so a one-off `new Markdown(...).render(width)` call
+ * returns the *plain* lines the real renderer would produce (paragraph
+ * breaks, code blocks, list nesting, and soft-wrap are all preserved)
+ * — the only thing missing is ANSI color codes, which don't affect
+ * the line count.
+ */
+const PASSTHROUGH_THEME: MarkdownTheme = {
+	heading: (t) => t,
+	link: (t) => t,
+	linkUrl: (t) => t,
+	code: (t) => t,
+	codeBlock: (t) => t,
+	codeBlockBorder: (t) => t,
+	quote: (t) => t,
+	quoteBorder: (t) => t,
+	hr: (t) => t,
+	listBullet: (t) => t,
+	bold: (t) => t,
+	italic: (t) => t,
+	strikethrough: (t) => t,
+	underline: (t) => t,
+};
+
+/**
+ * Estimated render width used when counting thinking-block lines for
+ * the header. The real render width depends on the terminal width and
+ * the box config (`Box` reserves `2 * paddingX` columns; `BorderedBox`
+ * reserves 2), neither of which is known at header-construction time.
+ * 80 columns is a reasonable middle ground for a typical terminal and
+ * is kept *constant* so the count doesn't flicker as the user resizes
+ * the terminal. If the user is on a much narrower or wider terminal
+ * the count will be approximate — that's documented behaviour.
+ */
+const ESTIMATED_RENDER_WIDTH = 80;
+
+/** Count the number of lines a thinking block would render to at `width`. */
+function countRenderedLines(thinkingText: string, width: number): number {
+	// Use a fresh, throwaway Markdown instance so we don't interfere with
+	// the cached output of the real thinking block.
+	const probe = new Markdown(thinkingText, 0, 0, PASSTHROUGH_THEME);
+	return probe.render(width).length;
+}
+
 /** Build the line count suffix string (e.g., " · 47 lines"), or empty if disabled. */
 function buildLineCountSuffix(thinkingText: string): string {
 	if (!config.showLineCount) return "";
-	const lines = thinkingText.split("\n").length;
+	const lineCount = countRenderedLines(thinkingText, ESTIMATED_RENDER_WIDTH);
+	if (lineCount === 0) return "";
 	const t = getTheme();
-	return " " + t.fg("dim", "·") + " " + t.fg("dim", `${lines} lines`);
+	const noun = lineCount === 1 ? "line" : "lines";
+	return " " + t.fg("dim", "·") + " " + t.fg("dim", `${lineCount} ${noun}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -591,9 +641,21 @@ const EDIT_LABEL_SENTINEL = "__edit__";
 // ---------------------------------------------------------------------------
 
 /**
- * Color picker submenu with live preview on hover and inline custom color
- * entry.  onPreview fires on every selection change (arrow-key navigation)
- * so the main settings UI can update its preview box in real time.
+ * Color picker submenu with live preview and inline custom color entry.
+ * `onPreview` fires on:
+ *   - arrow-key navigation through the preset list (so the main settings
+ *     UI can update its preview box in real time), and
+ *   - every keystroke in the custom hex input, when the current value
+ *     parses as a valid 6-digit hex (with or without leading `#`).
+ * Partial / invalid input is silently ignored; the preview stays on the
+ * last good value until the user completes the hex code.
+ *
+ * Esc on the preset list closes the submenu and reverts to the value
+ * before it was opened. Esc on the custom input goes back to the
+ * preset list (without closing the submenu) and also reverts to the
+ * value before it was opened — so cancelling an in-progress custom
+ * edit drops everything that happened in the submenu, including any
+ * preset the user arrowed through on the way to Custom….
  */
 function createColorSubmenu(
 	currentValue: string,
@@ -601,8 +663,14 @@ function createColorSubmenu(
 	onPreview: (color: string) => void,
 	done: (value?: string) => void,
 ): Container {
+	// The value before the submenu was opened. Both Esc paths revert
+	// to this: Esc on the preset list closes the submenu, Esc on the
+	// custom input goes back to the preset list. In both cases the
+	// user's intent is "cancel and go back to where I was" — which
+	// means the value before they started touching this submenu.
 	const originalColor = currentValue;
 	const container = new Container();
+	const kb = getKeybindings();
 
 	// Mutable state (reassigned on rebuild)
 	let selectList: SelectList;
@@ -621,7 +689,9 @@ function createColorSubmenu(
 			container.addChild(new Spacer(1));
 			container.addChild(customInput);
 			container.addChild(new Spacer(1));
-			container.addChild(new Text("Enter to confirm · Esc to go back", 0, 0));
+			container.addChild(
+				new Text("Live preview as you type · Enter to confirm · Esc to go back", 0, 0),
+			);
 		} else {
 			// --- SelectList mode ---
 			// Title
@@ -646,7 +716,11 @@ function createColorSubmenu(
 
 			selectList.onSelect = (item) => {
 				if (item.value === CUSTOM_COLOR_SENTINEL) {
-					// Transition to custom hex input
+					// Transition to custom hex input. Reset the live
+					// preview to the saved color so the user sees what
+					// they're editing away from, not the last preset
+					// they arrowed through on the way to Custom….
+					onPreview(originalColor);
 					customInput = new Input();
 					customInput.setValue("#");
 				(customInput as any).cursor = 1;
@@ -673,7 +747,7 @@ function createColorSubmenu(
 
 	container.handleInput = (data: string) => {
 		if (showingInput && customInput) {
-			if (data === "\r" || data === "\n") {
+			if (kb.matches(data, "tui.input.submit")) {
 				const raw = customInput.getValue().trim();
 				if (raw && /^#?[0-9a-fA-F]{6}$/.test(raw)) {
 					const normalized = raw.startsWith("#") ? raw : `#${raw}`;
@@ -682,8 +756,21 @@ function createColorSubmenu(
 				}
 				return;
 			}
-			if (data === "\x1b") {
-				// Escape → back to SelectList
+			if (kb.matches(data, "tui.select.cancel")) {
+				// Escape (or ctrl+c) → cancel the custom edit and go
+				// back to the preset list. Revert the live preview to
+				// the value the user had *before opening this submenu*
+				// (`originalColor`). This is what "cancel" means: drop
+				// everything that happened in the submenu — including
+				// any preset the user may have arrowed through on the
+				// way to Custom… — and go back to where they started.
+				// The preset list's own Esc handler does the same thing
+				// when cancelling the submenu entirely.
+				//
+				// We use the keybinding matcher instead of checking
+				// `data === "\x1b"` so terminals that send escape via
+				// the Kitty keyboard protocol (e.g. \x1b[27u on Kitty,
+				// WezTerm, Ghostty, foot) are handled too.
 				showingInput = false;
 				customInput = null;
 				onPreview(originalColor);
@@ -691,6 +778,17 @@ function createColorSubmenu(
 				return;
 			}
 			customInput.handleInput(data);
+			// Live preview: if the current value parses as a valid 6-digit
+			// hex (with or without leading `#`), fire onPreview so the
+			// main settings UI updates in real time — same UX as the
+			// preset list's arrow-key navigation. Partial / invalid input
+			// is silently ignored; the preview stays on the last good
+			// value until the user completes the hex code.
+			const current = customInput.getValue().trim();
+			if (/^#?[0-9a-fA-F]{6}$/.test(current)) {
+				const normalized = current.startsWith("#") ? current : `#${current}`;
+				onPreview(normalized);
+			}
 		} else {
 			selectList!.handleInput(data);
 		}
@@ -711,6 +809,7 @@ function createLabelSubmenu(
 ): Container {
 	const originalLabel = currentValue;
 	const container = new Container();
+	const kb = getKeybindings();
 
 	// Mutable state
 	let selectList: SelectList;
@@ -767,7 +866,7 @@ function createLabelSubmenu(
 
 	container.handleInput = (data: string) => {
 		if (showingInput && editInput) {
-			if (data === "\r" || data === "\n") {
+			if (kb.matches(data, "tui.input.submit")) {
 				const val = editInput.getValue().trim();
 				if (val) {
 					// Update local snapshot so the SelectList-mode view
@@ -777,8 +876,11 @@ function createLabelSubmenu(
 				}
 				return;
 			}
-			if (data === "\x1b") {
-				// Escape → back to SelectList (keep original)
+			if (kb.matches(data, "tui.select.cancel")) {
+				// Escape (or ctrl+c) → back to SelectList (keep original).
+				// Use the keybinding matcher so terminals that send escape
+				// via the Kitty keyboard protocol (e.g. \x1b[27u on Kitty,
+				// WezTerm, Ghostty, foot) are handled too.
 				showingInput = false;
 				editInput = null;
 				rebuild();
