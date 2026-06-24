@@ -44,6 +44,7 @@ import {
 	getKeybindings,
 	Input,
 	Markdown,
+	matchesKey,
 	SelectList,
 	type Component,
 	type MarkdownTheme,
@@ -1212,6 +1213,20 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				const slTheme = getSettingsListTheme();
+				// Wrapped theme for the main settings list that includes the
+				// "r" reset hotkey in the footer legend. Submenus use the
+				// original slTheme since "r" only resets at the top level.
+				const mainSlTheme: ReturnType<typeof getSettingsListTheme> = {
+					...slTheme,
+					hint: (text: string) => {
+						// Append the reset hotkey to the footer legend.
+						const augmented = text.replace(
+							"Esc to cancel",
+							"Esc to cancel · r: reset to defaults",
+						);
+						return slTheme.hint(augmented);
+					},
+				};
 				const selectTheme = getSelectListTheme();
 
 				const container = new Container();
@@ -1310,6 +1325,27 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 					// only in background mode).
 					const settingsContainer = new Container();
 					container.addChild(settingsContainer);
+
+					// Confirmation prompt (hidden by default, shown when reset is requested)
+					let confirmReset = false;
+					const confirmContainer = new Container();
+					container.addChild(confirmContainer);
+
+					const showConfirmPrompt = (): void => {
+						confirmContainer.clear();
+						confirmContainer.addChild(new Spacer(1));
+						confirmContainer.addChild(
+							new Text(
+								theme.fg("warning", theme.bold("Reset all settings to default? (y/n)")),
+								1,
+								0,
+							),
+						);
+					};
+
+					const hideConfirmPrompt = (): void => {
+						confirmContainer.clear();
+					};
 
 					// Bottom border
 					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -1453,7 +1489,7 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 						const newList = new SettingsList(
 							items,
 							Math.min(items.length + 2, 15),
-							slTheme,
+							mainSlTheme,
 							(id, newValue) => {
 								const oldMode = config.displayMode;
 								switch (id) {
@@ -1532,7 +1568,7 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 								tui.requestRender();
 							},
 							() => done(undefined),
-							{ enableSearch: true },
+							{},
 						);
 						// Restore the cursor to where it was before the rebuild.
 						// `selectedIndex` is private on SettingsList but accessible
@@ -1553,6 +1589,47 @@ export default function thinkingBoxExtension(pi: ExtensionAPI): void {
 						render: (w: number) => container.render(w),
 						invalidate: () => container.invalidate(),
 						handleInput: (data: string) => {
+							// Handle reset confirmation
+							if (confirmReset) {
+								if (matchesKey(data, "y")) {
+									// Reset config to defaults
+									config = {
+										...(defaults as unknown as ThinkingBoxConfig),
+									};
+									persistConfig();
+									confirmReset = false;
+									hideConfirmPrompt();
+									rebuildSettingsList();
+									buildPreview();
+									tui.requestRender();
+									return;
+								}
+								if (
+									matchesKey(data, "n") ||
+									matchesKey(data, "escape")
+								) {
+									confirmReset = false;
+									hideConfirmPrompt();
+									tui.requestRender();
+									return;
+								}
+								// Ignore other input while confirming
+								return;
+							}
+
+							// Hotkey "r" to reset — only when no submenu is active
+							const hasActiveSubmenu = !!(
+								settingsList as unknown as {
+									submenuComponent?: unknown;
+								}
+							)?.submenuComponent;
+							if (!hasActiveSubmenu && matchesKey(data, "r")) {
+								confirmReset = true;
+								showConfirmPrompt();
+								tui.requestRender();
+								return;
+							}
+
 							settingsList?.handleInput?.(data);
 							tui.requestRender();
 						},
