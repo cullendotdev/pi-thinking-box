@@ -32,6 +32,8 @@ Run `/thinking-box` to open an interactive settings menu with a live preview. Co
 - **Header Label** — customise the header text (default: "Thinking")
 - **Show Thinking Level** — append the current thinking level (e.g. "medium") to the header
 - **Show Line Count (Collapsed)** — display the rendered line count of collapsed thinking blocks (counted with the Markdown renderer so soft-wrap, code blocks, and lists are measured accurately, not just raw newlines)
+- **Show Last Lines (Collapsed)** — when the thinking block is collapsed, show the last few lines of content as a live preview that scrolls as new lines arrive
+- **Last Lines Count** — how many lines to show in the collapsed preview (1–10, default 3); disabled when Show Last Lines is off
 
 All changes apply immediately and preview in real time. Settings persist across sessions to `~/.pi/agent/config/thinking-box.json`.
 
@@ -59,7 +61,8 @@ Config persists across sessions to `~/.pi/agent/config/thinking-box.json`. Chang
 - Show Thinking Level: `true`
 - Show Line Count: `true`
 - Show Arrow: `true`
-
+- Show Last Lines: `true`
+- Last Lines Count: `3`
 ## How It Works
 
 The extension monkey-patches `AssistantMessageComponent.prototype.updateContent` to wrap thinking blocks in either a `Box` component (background mode, configurable fill color) or a custom `BorderedBox` component (bordered mode, configurable border style, color, and corner shape). Thinking text follows the active theme; the box border / fill colors are user-configured hex.

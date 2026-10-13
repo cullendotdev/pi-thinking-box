@@ -11,5 +11,7 @@
   "headerLabel": "Thinking",
   "showThinkingLevel": true,
   "showArrow": true,
-  "showLineCount": true
+  "showLineCount": true,
+  "showLastLines": true,
+  "lastLinesCount": 3
 }

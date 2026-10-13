@@ -33,6 +33,8 @@ interface ThinkingBoxConfig {
   showThinkingLevel: boolean;
   showArrow: boolean;
   showLineCount: boolean;
+  showLastLines: boolean;
+  lastLinesCount: number;
 }
 
 let config: ThinkingBoxConfig = { ...defaults };
@@ -93,6 +95,15 @@ if (config.displayMode === "bordered") {
 }
 ```
 
+**Collapsed preview (`showLastLines`):** When the thinking block is hidden (collapsed)
+and `config.showLastLines` is `true`, the header omits the `(hidden)` suffix,
+and a small `createLastLinesBox` component is rendered below it. The box
+extracts the last `config.lastLinesCount` raw text lines from the thinking
+content and wraps them in the same display mode (Box or BorderedBox) used
+for the expanded thinking block. As streaming updates arrive via repeated
+`updateContent` calls, the slice naturally scrolls — older lines drop off the
+top as new lines are appended to the bottom.
+
 When disabled (or its mode has no color set), the original method is called unchanged.
 
 ### 4. Interactive Settings Menu
@@ -117,7 +128,8 @@ The `/thinking-box` command opens an interactive settings UI built with `Setting
 | Show Thinking Level | Toggle (on/off) | SelectList | always |
 | Show Line Count (Collapsed) | Toggle (on/off) | SelectList | always |
 | Show Arrow | Toggle (on/off) | SelectList | always |
-
+| Show Last Lines (Collapsed) | Toggle (on/off) | SelectList | always |
+| Last Lines Count | Cycling SelectList | 1–10 | disabled when Show Last Lines is off |
 **Mutually exclusive styling:** The `Customize Thinking Box` and `Customize Border` submenus are swapped in and out of the main list based on `displayMode` — they never both appear. Switching `Display Mode` rebuilds the main `SettingsList` with a fresh item set so the visible submenu is the right one for the new mode.
 
 **Padding in bordered mode is always `0 × 0`.** The configured `paddingX` / `paddingY` values are preserved (used again when switching back to background mode) but ignored by both the monkey-patch and the live preview when `displayMode === "bordered"`. The `BorderedBox` is constructed with `new BorderedBox(0, 0, undefined, ...)` so the border sits flush against the text — any padding would just create a visual gap between the border and the content.
